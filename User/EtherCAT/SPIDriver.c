@@ -412,6 +412,10 @@ void SPIWritePDRamRegister(UINT8* WriteBuffer, UINT16 Address, UINT16 Count)
 }
 void SPIReadDRegister(UINT8* ReadBuffer, UINT16 Address, UINT16 Count)
 {
+    /* 整个 ESC 访问原子：CSR/PRAM 都是"命令+轮询+数据"多步序列，
+       DC 下 SYNC0/PDI ISR 若在步骤之间插入 SPI 事务会破坏序列
+       （表现为 SSC 内部状态已变、硬件寄存器未更新）。 */
+    DISABLE_ESC_INT();
     if(Address >= 0x1000)
     {
         SPIReadPDRamRegister(ReadBuffer, Address, Count);
@@ -420,10 +424,11 @@ void SPIReadDRegister(UINT8* ReadBuffer, UINT16 Address, UINT16 Count)
     {
         SPIReadRegUsingCSR(ReadBuffer, Address, Count);
     }
+    ENABLE_ESC_INT();
 }
 void SPIWriteRegister(UINT8* WriteBuffer, UINT16 Address, UINT16 Count)
 {
-
+    DISABLE_ESC_INT();
     if(Address >= 0x1000)
     {
         SPIWritePDRamRegister(WriteBuffer, Address, Count);
@@ -432,4 +437,5 @@ void SPIWriteRegister(UINT8* WriteBuffer, UINT16 Address, UINT16 Count)
     {
         SPIWriteRegUsingCSR(WriteBuffer, Address, Count);
     }
+    ENABLE_ESC_INT();
 }
