@@ -92,7 +92,7 @@ void MX_SPI3_Init(void)
   hspi3.Init.CLKPolarity = SPI_POLARITY_HIGH;
   hspi3.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi3.Init.NSS = SPI_NSS_SOFT;
-  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;   /* 10MHz（5MHz 实测无改善） */
+  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;   /* 80MHz/2 = 40MHz，LAN9252 SPI 上限 */
   hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;

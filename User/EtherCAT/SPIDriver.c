@@ -55,6 +55,16 @@ int tx_end_flag;
 volatile uint8_t  spiTimeoutFlag = 0;
 volatile uint32_t spiTimeoutCnt  = 0;
 volatile uint32_t spiTimeoutSR   = 0;
+volatile uint8_t  spiTimeoutStage = 0;
+
+/* CSR/PRAM 忙等待上限。
+   SPIReadDWord 单次已是有界的，但这些 do/while 本身没有次数限制：
+   LAN9252 的 CSR/PRAM 状态一旦异常（或读回全 0xFF/全 0），
+   BUSY 位会一直保持，循环永不退出。 */
+#define SPI_CSR_BUSY_GUARD     10000u
+#define SPI_PRAM_WAIT_GUARD    50000u
+
+volatile uint32_t spiCsrTimeoutCnt = 0;
 
 // __attribute__ ((section(".ARM.__at_0x024000000"))) UINT8 tx_rx_data[2];
 
@@ -195,11 +205,19 @@ void SPIReadRegUsingCSR(UINT8* ReadBuffer, UINT16 Address, UINT8 Count)
 
     SPIWriteDWord(ESC_CSR_CMD_REG, param32_1.Val);
 
+    {
+    uint32_t guard = SPI_CSR_BUSY_GUARD;
     do
     {
         param32_1.Val = SPIReadDWord(ESC_CSR_CMD_REG);
+        if(--guard == 0)
+        {
+            spiCsrTimeoutCnt++;
+            break;
+        }
 
     } while(param32_1.v[3] & ESC_CSR_BUSY);
+    }
 
     param32_1.Val = SPIReadDWord(ESC_CSR_DATA_REG);
 
@@ -227,11 +245,19 @@ void SPIWriteRegUsingCSR(UINT8* WriteBuffer, UINT16 Address, UINT8 Count)
     param32_1.v[3] = ESC_WRITE_BYTE;
 
     SPIWriteDWord(0x304, param32_1.Val);
+    {
+    uint32_t guard = SPI_CSR_BUSY_GUARD;
     do
     {
         param32_1.Val = SPIReadDWord(0x304);
+        if(--guard == 0)
+        {
+            spiCsrTimeoutCnt++;
+            break;
+        }
 
     } while(param32_1.v[3] & ESC_CSR_BUSY);
+    }
 
     return;
 }
@@ -250,11 +276,19 @@ void SPIReadPDRamRegister(UINT8* ReadBuffer, UINT16 Address, UINT16 Count)
 
     /*The host should not modify this field unless the PRAM Read Busy
     (PRAM_READ_BUSY) bit is a 0.*/
+    {
+    uint32_t guard = SPI_CSR_BUSY_GUARD;
     do
     {
         param32_1.Val = SPIReadDWord(PRAM_READ_CMD_REG);
+        if(--guard == 0)
+        {
+            spiCsrTimeoutCnt++;
+            break;
+        }
 
     } while((param32_1.v[3] & PRAM_RW_BUSY_8B));
+    }
 
     /*Write address and length in the EtherCAT Process RAM Read Address and
      * Length Register (ECAT_PRAM_RD_ADDR_LEN)*/
@@ -271,11 +305,19 @@ void SPIReadPDRamRegister(UINT8* ReadBuffer, UINT16 Address, UINT16 Count)
     SPIWriteDWord(PRAM_READ_CMD_REG, param32_1.Val);
 
     /*Read PRAM Read Data Available (PRAM_READ_AVAIL) bit is set*/
+    {
+    uint32_t guard = SPI_PRAM_WAIT_GUARD;
     do
     {
         param32_1.Val = SPIReadDWord(PRAM_READ_CMD_REG);
+        if(--guard == 0)
+        {
+            spiCsrTimeoutCnt++;
+            break;
+        }
 
     } while(!(param32_1.v[0] & IS_PRAM_SPACE_AVBL_MASK));
+    }
 
     nReadSpaceAvblCount = param32_1.v[1] & PRAM_SPACE_AVBL_COUNT_MASK;
 
@@ -337,11 +379,19 @@ void SPIWritePDRamRegister(UINT8* WriteBuffer, UINT16 Address, UINT16 Count)
 
     /*Make sure there is no previous write is pending
     (PRAM Write Busy) bit is a 0 */
+    {
+    uint32_t guard = SPI_CSR_BUSY_GUARD;
     do
     {
         param32_1.Val = SPIReadDWord(PRAM_WRITE_CMD_REG);
+        if(--guard == 0)
+        {
+            spiCsrTimeoutCnt++;
+            break;
+        }
 
     } while((param32_1.v[3] & PRAM_RW_BUSY_8B));
+    }
 
     /*Write Address and Length Register (ECAT_PRAM_WR_ADDR_LEN) with the
     starting UINT8 address and length)*/
@@ -358,11 +408,19 @@ void SPIWritePDRamRegister(UINT8* WriteBuffer, UINT16 Address, UINT16 Count)
     SPIWriteDWord(PRAM_WRITE_CMD_REG, param32_1.Val);
 
     /*Read PRAM write Data Available (PRAM_READ_AVAIL) bit is set*/
+    {
+    uint32_t guard = SPI_PRAM_WAIT_GUARD;
     do
     {
         param32_1.Val = SPIReadDWord(PRAM_WRITE_CMD_REG);
+        if(--guard == 0)
+        {
+            spiCsrTimeoutCnt++;
+            break;
+        }
 
     } while(!(param32_1.v[0] & IS_PRAM_SPACE_AVBL_MASK));
+    }
 
     /*Check write data available count*/
     nWrtSpcAvlCount = param32_1.v[1] & PRAM_SPACE_AVBL_COUNT_MASK;

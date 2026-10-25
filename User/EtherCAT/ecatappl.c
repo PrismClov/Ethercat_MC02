@@ -280,6 +280,9 @@ void HandleBusCycleCalculation(void)
 
 volatile UINT16 dbgLastALEvent = 0;
 
+/* SYNC0 ISR 调用次数（配合主循环计数 aaa 判断 1ms 周期下 ISR 是否吃满 CPU） */
+volatile uint32_t dbgSync0Cnt = 0;
+
 void PDI_Isr(void)
 {
     UINT16  ALEvent;
@@ -456,6 +459,8 @@ void Sync0_Isr(void)
         }
 
     }
+
+    dbgSync0Cnt++;
 }
 
 void Sync1_Isr(void)
