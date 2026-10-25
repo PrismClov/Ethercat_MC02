@@ -280,8 +280,11 @@ void HandleBusCycleCalculation(void)
 
 volatile UINT16 dbgLastALEvent = 0;
 
-/* SYNC0 ISR 调用次数（配合主循环计数 aaa 判断 1ms 周期下 ISR 是否吃满 CPU） */
-volatile uint32_t dbgSync0Cnt = 0;
+/* SYNC0 ISR 调用次数与耗时（DWT 周期数，548MHz 下 548 cycle = 1us）。
+   用来判断当前 SYNC0 周期下 ISR 占空比：last/max 接近周期即为饱和。 */
+volatile uint32_t dbgSync0Cnt     = 0;
+volatile uint32_t dbgSync0CycLast = 0;
+volatile uint32_t dbgSync0CycMax  = 0;
 
 void PDI_Isr(void)
 {
@@ -367,6 +370,8 @@ void PDI_Isr(void)
 
 void Sync0_Isr(void)
 {
+    uint32_t t0 = DWT->CYCCNT;
+
      Sync0WdCounter = 0;
 
     if(bDcSyncActive)
@@ -460,6 +465,12 @@ void Sync0_Isr(void)
 
     }
 
+    {
+        uint32_t dt = DWT->CYCCNT - t0;
+        dbgSync0CycLast = dt;
+        if (dt > dbgSync0CycMax)
+            dbgSync0CycMax = dt;
+    }
     dbgSync0Cnt++;
 }
 
