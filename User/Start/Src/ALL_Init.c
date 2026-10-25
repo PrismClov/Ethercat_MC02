@@ -3,6 +3,7 @@
 //
 
 #include "ALL_Init.h"
+#include "WHW_IRQN.h"
 
 void ALL_Init()
 {
@@ -22,7 +23,10 @@ uint32_t aaa;
 void default_task()
 {
 #ifdef LAN9252
+    /* 先跑 EtherCAT 主循环，再跑低速外设；
+       外设里的阻塞 SPI 会被 SYNC0/PDI 中断抢占，不会影响实时性。 */
     MainLoop();
+    APPL_DeviceTask();
     aaa++;
 #endif
 }

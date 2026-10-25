@@ -3,9 +3,15 @@
 #define WS2812_LowLevel    0xA0
 #define WS2812_HighLevel   0xC8
 
+/* 复位脉冲：100 个 0 字节（约 94us @8.5MHz），一次发完即可 */
+#define WS2812_RESET_BYTES        100u
+/* 等待 SPI 空闲的上限：原来是无超时自旋，SPI 异常会永久卡住调用者 */
+#define WS2812_READY_TIMEOUT_US   5000u
+
 void WS2812_Ctrl(uint8_t r, uint8_t g, uint8_t b)
 {
     uint8_t txbuf[24];
+    static const uint8_t resetbuf[WS2812_RESET_BYTES] = {0};
     uint8_t res = 0;
     for (int i = 0; i < 8; i++)
     {
@@ -14,12 +20,20 @@ void WS2812_Ctrl(uint8_t r, uint8_t g, uint8_t b)
         txbuf[23-i] = (((b>>i)&0x01) ? WS2812_HighLevel : WS2812_LowLevel)>>1;
     }
 	WS2812B_Write_Byte(&res, 0);
-    while (WS2812_SPI_UNIT.State != HAL_SPI_STATE_READY);
-	WS2812B_Write_Byte(txbuf, 24);
-    for (int i = 0; i < 100; i++)
+
     {
-        WS2812B_Write_Byte(&res, 1);
+        uint32_t limit = WS2812_READY_TIMEOUT_US * (SystemCoreClock / 1000000u);
+        uint32_t start = DWT->CYCCNT;
+        while (WS2812_SPI_UNIT.State != HAL_SPI_STATE_READY)
+        {
+            if ((uint32_t)(DWT->CYCCNT - start) >= limit)
+                return;
+        }
     }
+
+	WS2812B_Write_Byte(txbuf, 24);
+    /* 原来逐个发 100 次单字节事务，这里合并成一笔 */
+    WS2812B_Write_Byte((uint8_t *)resetbuf, WS2812_RESET_BYTES);
 }
 
 void V0_V1(int8_t *tmp)

@@ -16,8 +16,14 @@ volatile uint32_t dbgOutCnt = 0;
 volatile uint8_t  dbgIn[8];
 volatile uint32_t dbgInCnt = 0;
 
+/* 1ms 节拍计数：给主循环里的低速任务（IMU / WS2812）做限速用。
+   由 TIM7 回调自增，主循环只读。 */
+volatile uint32_t u32DeviceTickMs = 0;
+
 void USER_TIM7_Callback()
 {
+    u32DeviceTickMs++;
+
     /* RTT 心跳 + 过程数据监视 */
     {
         static uint32_t rttHb = 0;
@@ -66,13 +72,6 @@ void USER_TIM7_Callback()
     uint32_t ID2A = PDOChannel0x7000.C3ID1A | (PDOChannel0x7000.C3ID2A << 8);
     USER_FDCAN_AddMessageToTxFifoQ(2, ID2A, &PDOChannel0x7000.C31A);
 
-    // IMU读取
-    BMI088_RawInfo_Update(&PDIChannel0x6000.AX1);
-
-    // 状态指示灯
-    WS2812_Ctrl(PDOChannel0x7000.R, PDOChannel0x7000.G, PDOChannel0x7000.B);
-    //	WS2812_Ctrl(70, 70, 70);
-
     // IMU温控
     uint16_t Temp_Ctrl = PDOChannel0x7000.T1 | (PDOChannel0x7000.T2 << 8);
     TIM3->CCR4 = Temp_Ctrl;
@@ -89,6 +88,31 @@ void USER_TIM7_Callback()
     // CAN3B发送
     uint32_t ID2B = PDOChannel0x7000.C3ID1B | (PDOChannel0x7000.C3ID2B << 8);
     USER_FDCAN_AddMessageToTxFifoQ(2, ID2B, &PDOChannel0x7000.C31B);
+}
+
+/* 从 TIM7 中断里移出来的低速外设任务（阻塞式 SPI）。
+   在 main 主循环调用：SYNC0(1) / PDI(0) 实时中断可以随时抢占它，
+   不会像放在 TIM7 里那样反过来占用实时中断的执行时间。
+   用 1ms 节拍限速，速率与主循环快慢无关。 */
+void APPL_DeviceTask(void)
+{
+    static uint32_t imuTick = 0;
+    static uint32_t ledTick = 0;
+    uint32_t now = u32DeviceTickMs;
+
+    /* IMU：保持 1kHz 采样 */
+    if ((uint32_t)(now - imuTick) >= 1u)
+    {
+        imuTick = now;
+        BMI088_RawInfo_Update(&PDIChannel0x6000.AX1);
+    }
+
+    /* 状态指示灯：50Hz 足够，且不会持续占用主循环 */
+    if ((uint32_t)(now - ledTick) >= 20u)
+    {
+        ledTick = now;
+        WS2812_Ctrl(PDOChannel0x7000.R, PDOChannel0x7000.G, PDOChannel0x7000.B);
+    }
 }
 
 uint32_t eee;
