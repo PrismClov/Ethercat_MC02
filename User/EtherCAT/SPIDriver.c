@@ -65,6 +65,12 @@ volatile uint8_t  spiTimeoutStage = 0;
 #define SPI_PRAM_WAIT_GUARD    50000u
 
 volatile uint32_t spiCsrTimeoutCnt = 0;
+volatile uint32_t spiBusyCnt       = 0;
+
+/* PRAM 自动递增传输的单笔上限（字节）。
+   LAN9252 的 PRAM FIFO 深度有限，这里按 16 个字一批发送/读取：
+   比原来的"每 4 字节一笔单字节事务"少 16 倍事务数，同时不会一次灌满 FIFO。 */
+#define SPI_PRAM_CHUNK_BYTES   64u
 
 // __attribute__ ((section(".ARM.__at_0x024000000"))) UINT8 tx_rx_data[2];
 
@@ -75,7 +81,7 @@ void SPIWrite(UINT8 data)
     // tx_end_flag = 0;
     // HAL_SPI_Transmit_DMA(&hspi3,&tx_rx_data[0],1);
     // while (!tx_end_flag);
-    SPI_PollExchange_Fast(&hspi3, &data, NULL, 1, 1000);
+    SPI_PollExchange_Fast(&hspi3, &data, NULL, 1, SPI_TMO_US_CMD);
 }
 
 UINT8 SPIRead(void)
@@ -87,8 +93,9 @@ UINT8 SPIRead(void)
     // HAL_SPI_Receive_DMA(&hspi3,&tx_rx_data[1],1);
     // while (!rx_end_flag);
     // return (tx_rx_data[1]);
-    UINT8 data;
-    SPI_PollExchange_Fast(&hspi3, NULL, &data, 1, 1000);
+    UINT8 data = 0xFF;
+    if (SPI_PollExchange_Fast(&hspi3, NULL, &data, 1, SPI_TMO_US_CMD) != HAL_OK)
+        return 0xFF;
     return (data);
 }
 
@@ -113,7 +120,7 @@ UINT32 SPIReadDWord(UINT16 Address)
         __disable_irq();
         spiTimeoutFlag = 0;
         CSLOW();
-        SPI_PollExchange_Fast(&hspi3, tx, rx, 8, 1000);
+        SPI_PollExchange_Fast(&hspi3, tx, rx, 8, SPI_TMO_US_CMD);
         CSHIGH();
         __set_PRIMASK(__spiPm);
 
@@ -182,7 +189,7 @@ void SPIWriteDWord(UINT16 Address, UINT32 Val)
         __disable_irq();
         spiTimeoutFlag = 0;
         CSLOW();
-        SPI_PollExchange_Fast(&hspi3, tx, rx, 7, 1000);
+        SPI_PollExchange_Fast(&hspi3, tx, rx, 7, SPI_TMO_US_CMD);
         CSHIGH();
         __set_PRIMASK(__spiPm);
 
@@ -265,7 +272,10 @@ void SPIWriteRegUsingCSR(UINT8* WriteBuffer, UINT16 Address, UINT8 Count)
 void SPIReadPDRamRegister(UINT8* ReadBuffer, UINT16 Address, UINT16 Count)
 {
     UINT32_VAL param32_1 = {0};
-    UINT8 i = 0, nlength, nBytePosition;
+    /* i 必须是 16 位：输入 PDO 有 416 字节，8 位会在 256 处回绕，
+       把后半段写到缓冲区开头（原先按单字节搬运时不易察觉）。 */
+    UINT16 i = 0;
+    UINT8 nlength, nBytePosition;
     UINT8 nReadSpaceAvblCount;
     UINT16 RefAddr = Address;
 
@@ -337,30 +347,70 @@ void SPIReadPDRamRegister(UINT8* ReadBuffer, UINT16 Address, UINT16 Count)
     // Lets do it in auto increment mode
     {
     uint32_t __spiPm = __get_PRIMASK();
+    uint32_t guard = SPI_PRAM_WAIT_GUARD;
+    UINT8 tail[4];
+
     __disable_irq();
-    CSLOW();
-
-    // Write Command
-    SPIWriteByte(CMD_FAST_READ);
-
-    SPISendAddr(PRAM_READ_FIFO_REG);
-
-    // Dummy Byte
-    SPIWriteByte(CMD_FAST_READ_DUMMY);
 
     while(Count)
     {
-        param32_1.Val = SPIReadBurstMode();
+        uint32_t chunkWords, chunk;
 
-        nlength = Count > 4 ? 4 : Count;
-        memcpy((ReadBuffer + i), &param32_1, nlength);
+        /* 以 FIFO 可用字数为准，并限制单笔长度（避免灌满 FIFO） */
+        chunkWords = nReadSpaceAvblCount;
+        if(chunkWords > (SPI_PRAM_CHUNK_BYTES / 4u))
+            chunkWords = (SPI_PRAM_CHUNK_BYTES / 4u);
+        if((chunkWords * 4u) > Count)
+            chunkWords = ((uint32_t)Count + 3u) / 4u;
 
-        i += nlength;
-        Count -= nlength;
-        nReadSpaceAvblCount--;
+        if(chunkWords == 0u)
+        {
+            /* 暂时没有可读数据：重新查询可用空间（CS 已拉高，可直接访问命令寄存器） */
+            param32_1.Val = SPIReadDWord(PRAM_READ_CMD_REG);
+            nReadSpaceAvblCount = param32_1.v[1] & PRAM_SPACE_AVBL_COUNT_MASK;
+            if(--guard == 0u)
+            {
+                spiCsrTimeoutCnt++;
+                break;
+            }
+            continue;
+        }
+
+        chunk = chunkWords * 4u;
+
+        /* 一段 auto-increment 读：命令+地址+哑字节之后一次性搬完这一批 */
+        CSLOW();
+        SPIWriteByte(CMD_FAST_READ);
+        SPISendAddr(PRAM_READ_FIFO_REG);
+        SPIWriteByte(CMD_FAST_READ_DUMMY);
+
+        if(chunk > Count)
+        {
+            /* 尾部不足一个字：读满一个字再按实际字节数拷贝 */
+            if(SPI_PollExchange_Fast(&hspi3, NULL, tail, 4, SPI_TMO_US_BULK(4u)) != HAL_OK)
+            {
+                CSHIGH();
+                break;
+            }
+            memcpy(ReadBuffer + i, tail, Count);
+            i += Count;
+            Count = 0;
+        }
+        else
+        {
+            if(SPI_PollExchange_Fast(&hspi3, NULL, ReadBuffer + i, chunk, SPI_TMO_US_BULK(chunk)) != HAL_OK)
+            {
+                CSHIGH();
+                break;
+            }
+            i += chunk;
+            Count -= (UINT16)chunk;
+        }
+
+        CSHIGH();
+        nReadSpaceAvblCount = (UINT8)(nReadSpaceAvblCount - (UINT8)chunkWords);
     }
 
-    CSHIGH();
     __set_PRIMASK(__spiPm);
     }
 
@@ -370,7 +420,8 @@ void SPIReadPDRamRegister(UINT8* ReadBuffer, UINT16 Address, UINT16 Count)
 void SPIWritePDRamRegister(UINT8* WriteBuffer, UINT16 Address, UINT16 Count)
 {
     UINT32_VAL param32_1 = {0};
-    UINT8 i = 0, nlength, nBytePosition, nWrtSpcAvlCount;
+    UINT16 i = 0;   /* 同上：416 字节输出 PDO 会超过 8 位 */
+    UINT8 nlength, nBytePosition, nWrtSpcAvlCount;
 
     /*Reset or Abort any previous commands.*/
     param32_1.Val = PRAM_RW_ABORT_MASK;
@@ -443,27 +494,65 @@ void SPIWritePDRamRegister(UINT8* WriteBuffer, UINT16 Address, UINT16 Count)
     // Auto increment mode
     {
     uint32_t __spiPm = __get_PRIMASK();
+    uint32_t guard = SPI_PRAM_WAIT_GUARD;
+
     __disable_irq();
-    CSLOW();
-
-    // Write Command
-    SPIWriteByte(CMD_SERIAL_WRITE);
-
-    SPISendAddr(PRAM_WRITE_FIFO_REG);
 
     while(Count)
     {
-        nlength = Count > 4 ? 4 : Count;
-        param32_1.Val = 0;
-        memcpy(&param32_1, (WriteBuffer + i), nlength);
+        uint32_t chunkWords, chunk;
 
-        SPIWriteBurstMode(param32_1.Val);
-        i += nlength;
-        Count -= nlength;
-        nWrtSpcAvlCount--;
+        chunkWords = nWrtSpcAvlCount;
+        if(chunkWords > (SPI_PRAM_CHUNK_BYTES / 4u))
+            chunkWords = (SPI_PRAM_CHUNK_BYTES / 4u);
+        if((chunkWords * 4u) > Count)
+            chunkWords = ((uint32_t)Count + 3u) / 4u;
+
+        if(chunkWords == 0u)
+        {
+            param32_1.Val = SPIReadDWord(PRAM_WRITE_CMD_REG);
+            nWrtSpcAvlCount = param32_1.v[1] & PRAM_SPACE_AVBL_COUNT_MASK;
+            if(--guard == 0u)
+            {
+                spiCsrTimeoutCnt++;
+                break;
+            }
+            continue;
+        }
+
+        chunk = chunkWords * 4u;
+
+        CSLOW();
+        SPIWriteByte(CMD_SERIAL_WRITE);
+        SPISendAddr(PRAM_WRITE_FIFO_REG);
+
+        if(chunk > Count)
+        {
+            UINT8 tail[4] = {0, 0, 0, 0};
+            memcpy(tail, WriteBuffer + i, Count);
+            if(SPI_PollExchange_Fast(&hspi3, tail, NULL, 4, SPI_TMO_US_BULK(4u)) != HAL_OK)
+            {
+                CSHIGH();
+                break;
+            }
+            i += Count;
+            Count = 0;
+        }
+        else
+        {
+            if(SPI_PollExchange_Fast(&hspi3, (UINT8 *)(WriteBuffer + i), NULL, chunk, SPI_TMO_US_BULK(chunk)) != HAL_OK)
+            {
+                CSHIGH();
+                break;
+            }
+            i += chunk;
+            Count -= (UINT16)chunk;
+        }
+
+        CSHIGH();
+        nWrtSpcAvlCount = (UINT8)(nWrtSpcAvlCount - (UINT8)chunkWords);
     }
 
-    CSHIGH();
     __set_PRIMASK(__spiPm);
     }
     return;
