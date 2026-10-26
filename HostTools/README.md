@@ -8,7 +8,8 @@ PC 侧主站（C + SOEM 2.0.0）与实时控制界面（Python + PySide6 + pyqtg
 
 ```
 HostTools/
-├─ EcatUI.exe          双击启动（原生启动器，用 pythonw 跑 ui\ecat_ui.py）
+├─ EcatUI.exe          双击启动 Qt 界面（原生启动器）
+├─ EcatWeb.exe         双击启动 React Web 版（起桥 + 开浏览器）
 ├─ build.cmd           编译 C 主站工具 + 探针 + 启动器 -> bin\
 ├─ run_ui.cmd          命令行启动 Qt 界面
 ├─ run_web.cmd         零依赖 Web 版（8765）
@@ -29,6 +30,28 @@ HostTools/
 `EcatUI.exe` 是 **66 KB 原生启动器**：找同目录的 `ui\ecat_ui.py`，用
 `D:\clover\Environment\Python\pythonw.exe` 无控制台启动；可用环境变量
 `ECAT_PYTHON` 指向别的 pythonw.exe。
+
+## 打包 React 版
+
+React 版没有"打包成 exe"这一步的必要——它本身就是静态文件：
+
+```
+build_react.cmd      # npm run build -> webui-react\dist
+EcatWeb.exe          # 起 serve.py(8766) + 打开默认浏览器
+```
+
+`webui-react\dist\` 里只有 `index.html` + 一个 CSS + 一个 JS（gzip 约 96 KB），
+可以整个目录拷到任何静态服务器；但**数据接口 `/api/*` 必须由 `webui/serve.py`
+提供**（它读共享内存、转发命令），所以纯静态托管只能看界面、没有数据。
+
+如果要的是"像原生程序一样的独立窗口"，而不是开浏览器：
+
+| 方案 | 代价 |
+|---|---|
+| `EcatWeb.exe` + 浏览器（当前） | 67 KB，秒开；依赖已装好的 Python |
+| Tauri 包装 | 需要 Rust 工具链，安装包约 3–5 MB；用系统 WebView2 |
+| Electron 包装 | `npm i electron`，安装包 150 MB+；自带 Chromium |
+| PyInstaller 打包 Qt 版 | 本机 PySide6 6.12 不可用（QtCore DLL 127），需降版本 |
 
 其余 `ecat_ws2812*.c`、`diag.c`、`reg_read.c` 等是调试阶段的辅助程序，保留作参考。
 `*.jlink` 是 J-Link 命令脚本，`reset_only.jlink` / `flash_spi40.jlink` 仍在使用。
