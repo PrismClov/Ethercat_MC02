@@ -1,0 +1,10 @@
+si SWD
+speed 4000
+device STM32H723VG
+connect
+mem32 20001160 2
+mem32 20001C14 1
+sleep 1000
+mem32 20001C14 1
+savebin C:\Users\Administrator\Projects\ecat-diag\flash480.bin 0x08001F88 0x200
+q

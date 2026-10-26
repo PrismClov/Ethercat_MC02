@@ -1,0 +1,9 @@
+connect
+mem32 20001BEC 1
+mem32 20001BF0 1
+mem8 200017DB 1
+mem8 200017D4 1
+mem8 200017E8 1
+mem8 200017B6 1
+g
+q

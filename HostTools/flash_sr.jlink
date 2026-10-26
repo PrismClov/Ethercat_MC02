@@ -1,0 +1,10 @@
+si SWD
+speed 4000
+device STM32H723VG
+connect
+r
+h
+loadfile D:\ethercat\Horizon_EtherCAT-master\Slave\MC02_LAN9252\EcatDemoMC02\build-gcc\EcatDemoMC02.hex
+r
+g
+q

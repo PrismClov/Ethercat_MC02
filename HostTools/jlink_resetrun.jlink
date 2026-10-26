@@ -1,0 +1,11 @@
+connect
+r
+g
+sleep 1500
+halt
+mem32 20001BAC 1
+mem32 20001BB4 1
+mem32 20001BB8 1
+mem8 200017E8 1
+regs
+q

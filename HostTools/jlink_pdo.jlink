@@ -1,0 +1,4 @@
+connect
+mem8 20000C60 8
+g
+q

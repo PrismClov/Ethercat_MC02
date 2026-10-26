@@ -1,0 +1,4 @@
+connect
+mem32 20001C0C 1
+g
+q

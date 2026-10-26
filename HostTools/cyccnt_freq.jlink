@@ -1,0 +1,8 @@
+si SWD
+speed 4000
+device STM32H723VG
+connect
+mem32 E0001004 1
+sleep 1000
+mem32 E0001004 1
+q

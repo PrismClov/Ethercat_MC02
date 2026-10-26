@@ -1,0 +1,7 @@
+si SWD
+speed 4000
+device STM32H723VG
+connect
+mem32 58001400 1
+mem32 58001408 1
+q

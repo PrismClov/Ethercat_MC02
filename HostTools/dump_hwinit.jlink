@@ -1,0 +1,7 @@
+si SWD
+speed 4000
+device STM32H723VG
+connect
+savebin C:\Users\Administrator\Projects\ecat-diag\flash_hwinit.bin 0x08001F88 0x200
+savebin C:\Users\Administrator\Projects\ecat-diag\flash_hwinit_old.bin 0x08001E78 0x200
+q

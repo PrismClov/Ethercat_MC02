@@ -1,0 +1,22 @@
+connect
+g
+sleep 100
+halt
+regs
+g
+sleep 100
+halt
+regs
+g
+sleep 100
+halt
+regs
+g
+sleep 100
+halt
+regs
+g
+sleep 100
+halt
+regs
+q

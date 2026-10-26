@@ -1,0 +1,6 @@
+connect
+mem32 200020D4 4
+mem32 20001C00 1
+mem32 20001C0C 1
+g
+q

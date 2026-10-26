@@ -1,0 +1,4 @@
+connect
+mem32 200014DC 2
+g
+q

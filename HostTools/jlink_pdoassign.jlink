@@ -1,0 +1,4 @@
+connect
+mem8 20000AA8 12
+g
+q

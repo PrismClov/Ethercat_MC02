@@ -1,0 +1,8 @@
+connect
+mem8 200017B4 5
+mem8 200017D4 1
+mem8 200017E8 1
+mem8 200017F0 2
+mem8 200017E0 4
+g
+q

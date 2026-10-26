@@ -1,0 +1,29 @@
+si SWD
+speed 4000
+device STM32H723VG
+connect
+halt
+regs
+g
+sleep 300
+halt
+regs
+g
+sleep 300
+halt
+regs
+g
+sleep 300
+halt
+regs
+g
+sleep 300
+halt
+regs
+g
+sleep 300
+halt
+regs
+g
+sleep 300
+q
