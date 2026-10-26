@@ -182,11 +182,16 @@ void APPL_DeviceTask(void)
         dbgImuTemp = (uint16_t)((uint16_t)imuBuf[12] | ((uint16_t)imuBuf[13] << 8));
     }
 
-    /* 指示灯：使能=绿，急停=红，未使能=灭 */
+    /* 指示灯：U20 bit0=1 时由主站用 U1/U2/U3 (RGB) 控制；
+       否则回落到状态色（使能=绿，急停=红，未使能=灭）。 */
     if ((uint32_t)(now - ledTick) >= 20u)
     {
         ledTick = now;
-        if (dbgCtrlWord & CTRL_ESTOP)
+        if (RMUIPDOChannel0x7050.U20 & 0x01u)
+            WS2812_Ctrl(RMUIPDOChannel0x7050.U1,
+                        RMUIPDOChannel0x7050.U2,
+                        RMUIPDOChannel0x7050.U3);
+        else if (dbgCtrlWord & CTRL_ESTOP)
             WS2812_Ctrl(60, 0, 0);
         else if (dbgCtrlWord & CTRL_ENABLE)
             WS2812_Ctrl(0, 60, 0);
