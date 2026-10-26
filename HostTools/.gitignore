@@ -12,6 +12,7 @@
 
 # 运行日志 / 抓包文本
 *.txt
+!CMakeLists.txt
 *.log
 *.err
 

@@ -571,6 +571,8 @@ export default function App() {
           <Stat label="最大间隔" value={ui?.gap ?? 0} format={(v) => v.toFixed(1) + ' ms'} />
           <Stat label="RTT 含调度" value={ui?.rtt ?? 0} format={(v) => Math.round(v) + 'us'}
                 sub={ui ? `${Math.round(ui.rtt_min)} / ${Math.round(ui.rtt_max)}` : ''} />
+          <Stat label="PDI 相位" value={ui?.phase ?? 0} format={(v) => Math.round(v) + 'us'}
+                sub={ui ? `max ${Math.round(ui.phase_max ?? 0)}` : ''} />
           <Stat label="MCU 处理" value={ui?.mcu ?? 0} format={(v) => Math.round(v) + 'us'}
                 sub={ui ? `${Math.round(ui.mcu_min)} / ${Math.round(ui.mcu_max)}` : ''} />
         </div>

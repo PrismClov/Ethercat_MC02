@@ -89,6 +89,24 @@ Web 版的数据通路：`ecat_live.exe` ↔ 共享内存 ↔ `webui/serve.py`�
 build.cmd
 ```
 
+### Linux 独立主站
+
+`soem_master/` 是新增的 Linux 命令行主站，不依赖 Python 或 Windows 共享内存。
+它默认把输出 PDO 清零，适合接线、扫描、状态切换和 PDO 监视：
+
+```bash
+cmake -S HostTools/soem_master -B build/soem_master \
+  -DSOEM_ROOT=/path/to/SOEM -DCMAKE_BUILD_TYPE=Release
+cmake --build build/soem_master -j
+sudo ./build/soem_master/ecat_soem_master -i eth1 --preop-only
+sudo ./build/soem_master/ecat_soem_master -i eth1 -c 2000 --profile mc02
+sudo setcap cap_net_raw,cap_net_admin,cap_sys_nice,cap_ipc_lock=eip \
+  build/soem_master/ecat_soem_master
+ECAT_IFACE=enP8p1s0 bash HostTools/run_react_linux.sh
+```
+
+完整参数和故障排查见 `soem_master/README.md`。
+
 ## 运行
 
 ```

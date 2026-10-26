@@ -22,10 +22,22 @@ from urllib.parse import urlparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)          # HostTools/
 SERVE_DIR = HERE
-EXE = os.path.join(ROOT, "bin", "ecat_live.exe")
+IS_WINDOWS = os.name == "nt"
+if IS_WINDOWS:
+    EXE = os.path.join(ROOT, "bin", "ecat_live.exe")
+    IFACE = r"\Device\NPF_{9269FBF0-8A17-4A3B-A238-90DF8FACBB09}"
+    RT_PRIORITY = 0
+    RT_CPU = -1
+else:
+    EXE = os.environ.get(
+        "ECAT_MASTER",
+        os.path.join(ROOT, "..", "build", "soem_master", "ecat_soem_master"),
+    )
+    IFACE = os.environ.get("ECAT_IFACE", "enP8p1s0")
+    RT_PRIORITY = int(os.environ.get("ECAT_RT_PRIORITY", "80"))
+    RT_CPU = int(os.environ.get("ECAT_CPU", "5"))
 JLINK_SCRIPT = os.path.join(ROOT, "jlink", "reset_only.jlink")
 LOG_DIR = os.path.join(ROOT, "logs")
-IFACE = r"\Device\NPF_{9269FBF0-8A17-4A3B-A238-90DF8FACBB09}"
 
 AXES = 17
 STATE_NAME, CMD_NAME = "ecat_ui_state", "ecat_ui_cmd"
@@ -37,8 +49,28 @@ CMD_FMT = "<III6B2B" + "fffff" * AXES
 STATE_SIZE = struct.calcsize(STATE_FMT)
 CMD_SIZE = struct.calcsize(CMD_FMT)
 
-state_mm = mmap.mmap(-1, STATE_SIZE, tagname=STATE_NAME, access=mmap.ACCESS_WRITE)
-cmd_mm = mmap.mmap(-1, CMD_SIZE, tagname=CMD_NAME, access=mmap.ACCESS_WRITE)
+shared_handles = []
+
+
+def _open_shared(name, size):
+    if IS_WINDOWS:
+        return mmap.mmap(-1, size, tagname=name, access=mmap.ACCESS_WRITE)
+
+    from multiprocessing import shared_memory
+
+    try:
+        handle = shared_memory.SharedMemory(name=name, create=True, size=size)
+    except FileExistsError:
+        handle = shared_memory.SharedMemory(name=name)
+    if handle.size < size:
+        handle.close()
+        raise OSError(f"shared memory {name} is too small")
+    shared_handles.append(handle)
+    return handle.buf
+
+
+state_mm = _open_shared(STATE_NAME, STATE_SIZE)
+cmd_mm = _open_shared(CMD_NAME, CMD_SIZE)
 cmd_seq = 0
 cmd_lock = threading.Lock()
 master = None
@@ -88,6 +120,8 @@ def read_state():
         "wkc": v[19],
         "al": v[20],
         "alc": v[21],
+        "phase": v[22],
+        "phase_max": v[24],
         "rtt": v[tail], "rtt_min": v[tail + 1], "rtt_max": v[tail + 2],
         "mcu": v[tail + 3], "mcu_min": v[tail + 4], "mcu_max": v[tail + 5],
         "axes": axes,
@@ -105,7 +139,7 @@ def write_cmd(payload):
             int(payload.get("ctrl", 0)) & 0xFF,
             int(payload.get("led_mode", 0)) & 0xFF,
             led[0] & 0xFF, led[1] & 0xFF, led[2] & 0xFF,
-            0, 0, 0)
+            int(payload.get("stop", 0)) & 0xFF, 0, 0)
         body = b"".join(struct.pack("<fffff", *[float(x) for x in a]) for a in axes)
         cmd_mm[:len(head)] = head
         cmd_mm[len(head):len(head) + len(body)] = body
@@ -118,6 +152,11 @@ def master_action(action, cycle):
         if action == "reset":
             if running:
                 return {"running": True, "error": "stop first"}
+            if not IS_WINDOWS:
+                return {
+                    "running": False,
+                    "error": "Linux 下请重启从站电源或使用 J-Link，然后重新启动主站",
+                }
             jlink = r"D:\clover\Embedded\SEGGER\JLink_V810b\JLink.exe"
             script = JLINK_SCRIPT
             try:
@@ -146,21 +185,32 @@ def master_action(action, cycle):
         os.makedirs(LOG_DIR, exist_ok=True)
         try:
             log = open(os.path.join(LOG_DIR, "master.log"), "wb")
+            if IS_WINDOWS:
+                args = [EXE, IFACE, str(int(cycle)), "--headless"]
+                popen_kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW}
+            else:
+                args = [EXE, "-i", IFACE, "--cycle-ns", str(int(cycle)),
+                        "--profile", "mc02", "--lock-memory"]
+                if RT_PRIORITY > 0:
+                    args += ["--rt-priority", str(RT_PRIORITY)]
+                if RT_CPU >= 0:
+                    args += ["--cpu", str(RT_CPU)]
+                popen_kwargs = {}
             master = subprocess.Popen(
-                [EXE, IFACE, str(int(cycle)), "--headless"],
-                cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                creationflags=subprocess.CREATE_NO_WINDOW)
+                args, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                **popen_kwargs)
         except OSError as exc:
             return {"running": False, "error": str(exc)}
 
-        try:
-            import ctypes
-            h = ctypes.windll.kernel32.OpenProcess(0x0200, False, master.pid)
-            if h:
-                ctypes.windll.kernel32.SetPriorityClass(h, 0x80)
-                ctypes.windll.kernel32.CloseHandle(h)
-        except Exception:
-            pass
+        if IS_WINDOWS:
+            try:
+                import ctypes
+                h = ctypes.windll.kernel32.OpenProcess(0x0200, False, master.pid)
+                if h:
+                    ctypes.windll.kernel32.SetPriorityClass(h, 0x80)
+                    ctypes.windll.kernel32.CloseHandle(h)
+            except Exception:
+                pass
 
         # 等主站真正进 OP，别让界面显示"已启动"但其实 PREOP 就退了
         online = False
@@ -172,12 +222,22 @@ def master_action(action, cycle):
                 online = True
                 break
             time.sleep(0.1)
-        return {"running": master.poll() is None, "online": online, "pid": master.pid}
+        result = {"running": master.poll() is None, "online": online,
+                  "pid": master.pid}
+        if not result["running"]:
+            try:
+                with open(os.path.join(LOG_DIR, "master.log"), "rb") as fh:
+                    tail = fh.read()[-1600:].decode("utf-8", "replace")
+                result["error"] = tail.strip().splitlines()[-1] if tail.strip() else ""
+            except OSError:
+                pass
+        return result
 
 
 class Bridge(ThreadingHTTPServer):
-    # Windows 上 SO_REUSEADDR 允许重复绑定同一个端口，会导致两个桥抢请求
-    allow_reuse_address = False
+    # Windows 上 SO_REUSEADDR 允许重复绑定同一个端口，会导致两个桥抢请求；
+    # Linux 需要它来避免重启时被 TIME_WAIT 占住。
+    allow_reuse_address = not IS_WINDOWS
     daemon_threads = True
 
 
