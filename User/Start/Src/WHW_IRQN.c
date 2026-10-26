@@ -121,6 +121,8 @@ volatile uint32_t dbgTxCnt    = 0;
 volatile uint32_t dbgRxCnt    = 0;
 volatile uint8_t  dbgAx1[10];
 volatile uint16_t dbgImuTemp  = 0;
+/* PDO 读取失败（SPI 超时导致读回 0）的次数：此时本帧不发布，沿用上一帧 */
+volatile uint32_t dbgPdoFailCnt = 0;
 
 /* 1ms 节拍：给主循环低速任务（IMU / WS2812）限速用 */
 volatile uint32_t u32DeviceTickMs = 0;
@@ -264,16 +266,37 @@ uint32_t eee;
 
 void APPL_InputMapping(UINT16* pData)
 {
+    /* 上一帧成功的数据：SPI 偶发 RXP 超时时读回全 0，
+       直接发出去主站就会看到"数据全 0"，所以这里用它兜底。 */
+    static uint8_t lastGood[IN_TOTAL_LEN];
+    extern volatile uint32_t spiTimeoutCnt;
+    uint32_t t0 = spiTimeoutCnt;
     uint8_t *d = (uint8_t *)pData;
 
     /* 0x6000: 204 B，紧邻其后是 0x60F0 的 212 B，共 416 B */
     memcpy(d, (uint8_t *)&PDIChannel0x6000 + sizeof(PDIChannel0x6000.u16SubIndex0), IN_0x6000_LEN);
-    memset(&PDIChannel0x6000.AX1, 0, IN_0x6000_LEN);
 
     memcpy(d + IN_0x6000_LEN,
            (uint8_t *)&RMDAPDIChannel0x60F0 + sizeof(RMDAPDIChannel0x60F0.u16SubIndex0),
            IN_0x60F0_LEN);
-    memset(&RMDAPDIChannel0x60F0.R1, 0, IN_0x60F0_LEN);
+
+    /* 这里**不能**清空记录。
+       数据生产者是 1 kHz（TIM7 的 CAN 反馈 / 模拟）和主循环（IMU），
+       而本函数每个 SYNC0 都会执行；SYNC0 快于 1 kHz 时（2 kHz / 3 kHz），
+       清空后还没等到新数据就发出去了，主站会看到全 0 的帧。
+       改为保持上一次写入值：PDO 重复上一采样，符合 1 kHz 数据源的实际语义。 */
+
+    if (spiTimeoutCnt != t0)
+    {
+        /* 本帧的 ESC 读取失败：丢掉这次结果，继续发上一帧有效数据 */
+        memcpy(d, lastGood, IN_TOTAL_LEN);
+        dbgPdoFailCnt++;
+    }
+    else
+    {
+        memcpy(lastGood, d, IN_TOTAL_LEN);
+    }
+
     eee++;
 }
 
