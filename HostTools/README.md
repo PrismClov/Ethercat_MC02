@@ -9,7 +9,8 @@ PC 侧主站（C + SOEM 2.0.0）与实时控制界面（Python + PySide6 + pyqtg
 ```
 HostTools/
 ├─ EcatUI.exe          双击启动 Qt 界面（原生启动器）
-├─ EcatWeb.exe         双击启动 React Web 版（起桥 + 开浏览器）
+├─ EcatWeb.exe         双击启动 React 版（起桥 + 开浏览器）
+├─ EcatClient.exe      双击启动 React 版（QtWebEngine 原生窗口，不用浏览器）
 ├─ build.cmd           编译 C 主站工具 + 探针 + 启动器 -> bin\
 ├─ run_ui.cmd          命令行启动 Qt 界面
 ├─ run_web.cmd         零依赖 Web 版（8765）
@@ -63,6 +64,17 @@ EcatWeb.exe          # 起 serve.py(8766) + 打开默认浏览器
 | Qt / PySide6 | `run_ui.cmd` | 原生、最省资源；弹簧滑块 + 数字滚动，图表 10 fps |
 | Web 零依赖 | `run_web.cmd` | HTML+CSS+JS，单个 Python 桥；用真 `mix-blend-mode: difference` 做指示块 |
 | Web React | `run_react.cmd` | 直接 `npm i github:HanRabbit/NOIR-UI`，用它的 `Segmented / NumberFlow / Stat / toast` |
+
+## 三种启动方式
+
+| exe | 效果 | 依赖 |
+|---|---|---|
+| `EcatUI.exe` | 原生 Qt 界面 | 已装 Python + PySide6 |
+| `EcatClient.exe` | **React 界面装进原生窗口**（QtWebEngine），无浏览器 | 同上（WebEngine 随 PySide6 安装） |
+| `EcatWeb.exe` | React 界面 + 系统默认浏览器 | 同上 |
+
+`EcatClient.exe` 内部在后台线程起 `webui/serve.py`，窗口关闭时自动停主站、关桥；
+如果已经有一个客户端在跑，它只连已有的桥，不会重复启动。
 
 Web 版的数据通路：`ecat_live.exe` ↔ 共享内存 ↔ `webui/serve.py`（SSE 30 Hz）↔ 浏览器。
 三个界面可以同时开着看同一份数据，但**同一时刻只能有一个主站进程**。

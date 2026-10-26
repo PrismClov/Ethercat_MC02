@@ -250,5 +250,15 @@ def main():
         master_action("stop", 0)
 
 
+def start_server(port=8766, root=None):
+    """给 web_client.py 用：后台线程起桥，返回 server 对象。"""
+    global SERVE_DIR
+    if root:
+        SERVE_DIR = os.path.abspath(root)
+    srv = Bridge(("127.0.0.1", port), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
 if __name__ == "__main__":
     main()

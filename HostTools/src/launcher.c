@@ -6,9 +6,16 @@
 #include <windows.h>
 #include <wchar.h>
 
+#ifndef APP_TITLE
+#define APP_TITLE L"EcatUI"
+#endif
+#ifndef APP_SCRIPT
+#define APP_SCRIPT L"ui\\ecat_ui.py"
+#endif
+
 static void die(const wchar_t *msg)
 {
-    MessageBoxW(NULL, msg, L"EcatUI", MB_ICONERROR | MB_OK);
+    MessageBoxW(NULL, msg, APP_TITLE, MB_ICONERROR | MB_OK);
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
@@ -44,10 +51,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
         return 1;
     }
 
-    swprintf(script, MAX_PATH, L"%s\\ui\\ecat_ui.py", root);
+    swprintf(script, MAX_PATH, L"%s\\" APP_SCRIPT, root);
     if (GetFileAttributesW(script) == INVALID_FILE_ATTRIBUTES)
     {
-        die(L"找不到 ui\\ecat_ui.py。\n请把 EcatUI.exe 放在 HostTools 目录下运行。");
+        die(L"找不到 " APP_SCRIPT L"。\n请把 " APP_TITLE L".exe 放在 HostTools 目录下运行。");
         return 1;
     }
 
