@@ -1,5 +1,5 @@
 @echo off
-rem 重新编译主站工具（需要 SOEM 2.0.0 + MinGW gcc）
+rem Rebuild host tools (requires SOEM 2.0.0 + MinGW gcc)
 setlocal
 cd /d "%~dp0"
 

@@ -1,5 +1,5 @@
 @echo off
-rem 17 轴 MIT 实时监视/控制。用法: run_live.cmd [cycle_ns]，默认 2000000 (2ms)
+rem 17-axis live monitor. usage: run_live.cmd [cycle_ns], default 2000000 (2 ms)
 setlocal
 cd /d "%~dp0"
 set CYCLE=%~1

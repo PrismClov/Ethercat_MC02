@@ -1,5 +1,5 @@
 @echo off
-rem 构建 React 版（首次会安装依赖，需要几分钟）
+rem Build the React UI (first run installs deps, takes a few minutes).
 setlocal
 cd /d "%~dp0webui-react"
 set PATH=D:\clover\Environment\node\node-v24.22.1-win-x64;%PATH%
