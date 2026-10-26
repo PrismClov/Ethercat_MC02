@@ -1,9 +1,13 @@
 #include "ws2812.h"
 
-#define WS2812_LowLevel    0xA0
-#define WS2812_HighLevel   0xC8
+/* 与官方例程 CtrBoard-H7_WS2812 一致：
+   0xC0 >>1 = 0x60（2 个高电平 = T0H 0.33us @6MHz）
+   0xF0 >>1 = 0x78（4 个高电平 = T1H 0.67us @6MHz）
+   注意 0xA0/0xC8 右移后会变成两段不连续脉冲，波形是错的。 */
+#define WS2812_LowLevel    0xC0
+#define WS2812_HighLevel   0xF0
 
-/* 复位脉冲：100 个 0 字节（约 94us @8.5MHz），一次发完即可 */
+/* 复位脉冲：100 个 0 字节（约 133us @6MHz），一次发完即可 */
 #define WS2812_RESET_BYTES        100u
 /* 等待 SPI 空闲的上限：原来是无超时自旋，SPI 异常会永久卡住调用者 */
 #define WS2812_READY_TIMEOUT_US   5000u

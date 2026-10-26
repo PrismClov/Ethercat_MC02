@@ -144,6 +144,15 @@ int main(void)
   MX_TIM12_Init();
   MX_SPI3_Init();
   /* USER CODE BEGIN 2 */
+    /* WS2812 需要 ~6MHz：SPI6 内核取 PLL2P(100MHz)，/16 = 6.25MHz
+       （官方例程是 HSE 24MHz /4 = 6MHz）。
+       必须放在所有外设初始化之后：MX_SPI3_Init 等内部的
+       HAL_RCCEx_PeriphCLKConfig 会把 D3CCIPR.SPI6SEL 复位成 PCLK4。 */
+    /* SPI6 内核 = PLL2P(100MHz)，配合 /16 得到 6.25MHz（官方例程 6MHz）。
+       注意：不能通过 HAL 的 Spi6ClockSelection 设置——那条路径会连带重配 PLL2，
+       而 PLL2 同时是 FDCAN/USART1 的时钟源；这里只做 mux。 */
+    MODIFY_REG(RCC->D3CCIPR, RCC_D3CCIPR_SPI6SEL, RCC_SPI6CLKSOURCE_PLL2);
+
     SEGGER_RTT_printf(0, "peripherals init done, ALL_Init...\n");
     ALL_Init();
     SEGGER_RTT_printf(0, "ALL_Init done, entering main loop\n");
@@ -243,7 +252,7 @@ void PeriphCommonClock_Config(void)
   /** Initializes the peripherals clock
   */
   PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SPI3|RCC_PERIPHCLK_SPI2
-                              |RCC_PERIPHCLK_FDCAN|RCC_PERIPHCLK_USART1
+  |RCC_PERIPHCLK_FDCAN|RCC_PERIPHCLK_USART1
                               |RCC_PERIPHCLK_USART10|RCC_PERIPHCLK_CKPER;
   PeriphClkInitStruct.PLL2.PLL2M = 24;
   PeriphClkInitStruct.PLL2.PLL2N = 200;
