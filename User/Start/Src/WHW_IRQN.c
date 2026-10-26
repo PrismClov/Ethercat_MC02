@@ -5,138 +5,216 @@
 #include "WHW_IRQN.h"
 #include "SEGGER_RTT.h"
 
-#define Data2PC_NUM      216
-#define Data2PCRMDA_NUM  200
-#define Data2MCU_NUM     68
-#define Data2MCURMUI_NUM 128
+/* ============ 17 轴 MIT PDO 布局 ============
+   输出 196 B : 0x7000(176) + 0x7050(20)
+   输入 416 B : 0x6000(204) + 0x60F0(212)
+   全部小端；两段紧邻，没有 +2 空洞。 */
+#define AXIS_COUNT            17u
 
-/* 供 J-Link 读取的数据监视变量 */
-volatile uint8_t  dbgOutR = 0, dbgOutG = 0, dbgOutB = 0;
-volatile uint32_t dbgOutCnt = 0;
-volatile uint8_t  dbgIn[8];
-volatile uint32_t dbgInCnt = 0;
+#define OUT_TOTAL_LEN       196u
+#define OUT_0x7000_LEN      176u
+#define OUT_0x7050_LEN       20u
+#define OUT_CTRL_OFF          0u
+#define OUT_SEQ_OFF           1u
+#define OUT_AXIS_OFF(n)     (4u + 10u * ((uint32_t)(n) - 1u))
 
-/* 1ms 节拍计数：给主循环里的低速任务（IMU / WS2812）做限速用。
-   由 TIM7 回调自增，主循环只读。 */
+#define IN_TOTAL_LEN        416u
+#define IN_0x6000_LEN       204u
+#define IN_0x60F0_LEN       212u
+#define IN_AXIS_OFF(n)      (12u + 10u * ((uint32_t)(n) - 1u))
+
+/* 控制字位定义 */
+#define CTRL_ENABLE   0x01u
+#define CTRL_ESTOP    0x02u
+#define CTRL_HOMING   0x04u
+#define CTRL_MODE_MASK 0xF8u
+
+/* ============ 电机配置表 ============
+   id = 0 表示该轴未配置，不发送任何帧。
+   PMAX/VMAX/TMAX/KT 必须与实际电机一致，否则位置/力矩会被错误量化。 */
+typedef struct
+{
+    uint16_t id;
+    float    pmax;
+    float    vmax;
+    float    tmax;
+    float    kt;
+} MotorCfg;
+
+static const MotorCfg gMotorCfg[AXIS_COUNT] =
+{
+    /* CAN1: 轴 1..7 */
+    {0, 0.0f, 0.0f, 0.0f, 0.0f}, {0, 0.0f, 0.0f, 0.0f, 0.0f},
+    {0, 0.0f, 0.0f, 0.0f, 0.0f}, {0, 0.0f, 0.0f, 0.0f, 0.0f},
+    {0, 0.0f, 0.0f, 0.0f, 0.0f}, {0, 0.0f, 0.0f, 0.0f, 0.0f},
+    {0, 0.0f, 0.0f, 0.0f, 0.0f},
+    /* CAN2: 轴 8..14 */
+    {0, 0.0f, 0.0f, 0.0f, 0.0f}, {0, 0.0f, 0.0f, 0.0f, 0.0f},
+    {0, 0.0f, 0.0f, 0.0f, 0.0f}, {0, 0.0f, 0.0f, 0.0f, 0.0f},
+    {0, 0.0f, 0.0f, 0.0f, 0.0f}, {0, 0.0f, 0.0f, 0.0f, 0.0f},
+    {0, 0.0f, 0.0f, 0.0f, 0.0f},
+    /* CAN3: 轴 15..17 */
+    {0, 0.0f, 0.0f, 0.0f, 0.0f}, {0, 0.0f, 0.0f, 0.0f, 0.0f},
+    {0, 0.0f, 0.0f, 0.0f, 0.0f},
+};
+
+/* 供 J-Link 读取的监视变量 */
+volatile uint8_t  dbgCtrlWord = 0;
+volatile uint32_t dbgSeq      = 0;
+volatile uint32_t dbgTxCnt    = 0;
+volatile uint32_t dbgRxCnt    = 0;
+volatile uint8_t  dbgAx1[10];
+
+/* 1ms 节拍：给主循环低速任务（IMU / WS2812）限速用 */
 volatile uint32_t u32DeviceTickMs = 0;
+
+static uint16_t rd_u16(const uint8_t *p)
+{
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+static int16_t rd_i16(const uint8_t *p)
+{
+    return (int16_t)rd_u16(p);
+}
+
+/* 线性量化：x -> [0, 2^bits-1] */
+static uint16_t float_to_uint(float x, float x_min, float x_max, uint8_t bits)
+{
+    float span = x_max - x_min;
+    if (x < x_min) x = x_min;
+    if (x > x_max) x = x_max;
+    if (span <= 0.0f) return 0;
+    return (uint16_t)((x - x_min) * (float)((1u << bits) - 1u) / span);
+}
+
+/* 轴号(1..17) -> CAN 通道(0..2)，未使用返回 0xFF */
+static uint8_t Motor_BusOf(uint32_t axis)
+{
+    if (axis <= 7u)  return 0;
+    if (axis <= 14u) return 1;
+    if (axis <= 17u) return 2;
+    return 0xFF;
+}
+
+/* 单个轴的 MIT 帧打包并发送（规格 5.1） */
+static void Motor_SendAxis(uint32_t axis)
+{
+    const MotorCfg *m = &gMotorCfg[axis - 1u];
+    const uint8_t *c;
+    float pos_rad, vel_rad, tor_nm, kp, kd;
+    uint16_t pos_u, vel_u, tor_u, kp_u, kd_u;
+    uint8_t d[8];
+    uint8_t bus;
+
+    if (m->id == 0u) return;                 /* 未配置 */
+    bus = Motor_BusOf(axis);
+    if (bus == 0xFFu) return;
+
+    c = (const uint8_t *)&PDOChannel0x7000 + OUT_AXIS_OFF(axis);
+
+    pos_rad = (float)rd_i16(c + 0) * 0.01f * 0.0174532925f;
+    vel_rad = (float)rd_i16(c + 2) * 0.1f  * 0.0174532925f;
+    tor_nm  = (float)rd_i16(c + 4) * 0.01f * m->kt;
+    kp      = (float)rd_u16(c + 6);
+    kd      = (float)rd_u16(c + 8) * 0.01f;
+
+    /* 急停：零力矩、零增益，位置保持上一周期命令 */
+    if (dbgCtrlWord & CTRL_ESTOP)
+    {
+        tor_nm = 0.0f;
+        kp = 0.0f;
+        kd = 0.0f;
+    }
+
+    if (kp > 500.0f) kp = 500.0f;
+    if (kd > 5.0f)   kd = 5.0f;
+
+    pos_u = float_to_uint(pos_rad, -m->pmax, m->pmax, 16);
+    vel_u = float_to_uint(vel_rad, -m->vmax, m->vmax, 12);
+    tor_u = float_to_uint(tor_nm,  -m->tmax, m->tmax, 12);
+    kp_u  = (uint16_t)(kp * 4095.0f / 500.0f + 0.5f);
+    kd_u  = (uint16_t)(kd * 4095.0f / 5.0f + 0.5f);
+
+    d[0] = (uint8_t)(pos_u >> 8);
+    d[1] = (uint8_t)(pos_u & 0xFF);
+    d[2] = (uint8_t)(vel_u >> 4);
+    d[3] = (uint8_t)(((vel_u & 0x0F) << 4) | ((kp_u >> 8) & 0x0F));
+    d[4] = (uint8_t)(kp_u & 0xFF);
+    d[5] = (uint8_t)(kd_u >> 4);
+    d[6] = (uint8_t)(((kd_u & 0x0F) << 4) | ((tor_u >> 8) & 0x0F));
+    d[7] = (uint8_t)(tor_u & 0xFF);
+
+    USER_FDCAN_AddMessageToTxFifoQ(bus, m->id, d);
+    dbgTxCnt++;
+}
 
 void USER_TIM7_Callback()
 {
+    uint32_t n;
+
     u32DeviceTickMs++;
 
-    /* RTT 心跳 + 过程数据监视 */
-    {
-        static uint32_t rttHb = 0;
-        static uint8_t  lastR = 0, lastG = 0, lastB = 0;
-        extern uint32_t aaa;
-        extern uint32_t ccc, ddd;
-        uint8_t r = PDOChannel0x7000.R;
-        uint8_t g = PDOChannel0x7000.G;
-        uint8_t b = PDOChannel0x7000.B;
+    for (n = 1u; n <= AXIS_COUNT; n++)
+        Motor_SendAxis(n);
 
-        /* 主站 -> 从站 输出数据：记录变化次数/当前值（打印放到心跳里） */
-        if ((r != lastR) || (g != lastG) || (b != lastB))
-        {
-            lastR = r; lastG = g; lastB = b;
-            dbgOutR = r; dbgOutG = g; dbgOutB = b;
-            dbgOutCnt++;
-        }
-
-        if ((rttHb++ % 400u) == 0u)
-        {
-            /* 从站 -> 主站 输入数据：取 0x6000 对象前几个字节 */
-            uint8_t *pi = (uint8_t *)&PDIChannel0x6000;
-            int k;
-            for (k = 0; k < 8; k++)
-                dbgIn[k] = pi[2 + k];
-            dbgInCnt++;
-
-            SEGGER_RTT_printf(0, "hb=%u loop=%u OUT=%3u,%3u,%3u CHG=%u IN=%02X %02X %02X %02X\n",
-                              (unsigned)rttHb, (unsigned)aaa,
-                              (unsigned)r, (unsigned)g, (unsigned)b,
-                              (unsigned)dbgOutCnt,
-                              (unsigned)pi[2], (unsigned)pi[3],
-                              (unsigned)pi[4], (unsigned)pi[5]);
-        }
-    }
-
-    // CAN1A发送
-    uint32_t ID0A = PDOChannel0x7000.C1ID1A | (PDOChannel0x7000.C1ID2A << 8);
-    USER_FDCAN_AddMessageToTxFifoQ(0, ID0A, &PDOChannel0x7000.C11A);
-
-    // CAN2A发送
-    uint32_t ID1A = PDOChannel0x7000.C2ID1A | (PDOChannel0x7000.C2ID2A << 8);
-    USER_FDCAN_AddMessageToTxFifoQ(1, ID1A, &PDOChannel0x7000.C21A);
-
-    // CAN3发送
-    uint32_t ID2A = PDOChannel0x7000.C3ID1A | (PDOChannel0x7000.C3ID2A << 8);
-    USER_FDCAN_AddMessageToTxFifoQ(2, ID2A, &PDOChannel0x7000.C31A);
-
-    // IMU温控
-    uint16_t Temp_Ctrl = PDOChannel0x7000.T1 | (PDOChannel0x7000.T2 << 8);
-    TIM3->CCR4 = Temp_Ctrl;
-    TIM3->CCR4 = 0;
-
-    // CAN1B发送
-    uint32_t ID0B = PDOChannel0x7000.C1ID1B | (PDOChannel0x7000.C1ID2B << 8);
-    USER_FDCAN_AddMessageToTxFifoQ(0, ID0B, &PDOChannel0x7000.C11B);
-
-    // CAN2B发送
-    uint32_t ID1B = PDOChannel0x7000.C2ID1B | (PDOChannel0x7000.C2ID2B << 8);
-    USER_FDCAN_AddMessageToTxFifoQ(1, ID1B, &PDOChannel0x7000.C21B);
-
-    // CAN3B发送
-    uint32_t ID2B = PDOChannel0x7000.C3ID1B | (PDOChannel0x7000.C3ID2B << 8);
-    USER_FDCAN_AddMessageToTxFifoQ(2, ID2B, &PDOChannel0x7000.C31B);
+    dbgSeq = (uint32_t)((uint8_t *)&PDOChannel0x7000)[OUT_SEQ_OFF]
+           | ((uint32_t)((uint8_t *)&PDOChannel0x7000)[OUT_SEQ_OFF + 1u] << 8)
+           | ((uint32_t)((uint8_t *)&PDOChannel0x7000)[OUT_SEQ_OFF + 2u] << 16);
 }
 
-/* 从 TIM7 中断里移出来的低速外设任务（阻塞式 SPI）。
-   在 main 主循环调用：SYNC0(1) / PDI(0) 实时中断可以随时抢占它，
-   不会像放在 TIM7 里那样反过来占用实时中断的执行时间。
-   用 1ms 节拍限速，速率与主循环快慢无关。 */
+/* 从 TIM7 中断里移出来的低速外设任务（阻塞式 SPI），在主循环调用 */
 void APPL_DeviceTask(void)
 {
     static uint32_t imuTick = 0;
     static uint32_t ledTick = 0;
     uint32_t now = u32DeviceTickMs;
 
-    /* IMU：保持 1kHz 采样 */
     if ((uint32_t)(now - imuTick) >= 1u)
     {
         imuTick = now;
         BMI088_RawInfo_Update(&PDIChannel0x6000.AX1);
     }
 
-    /* 状态指示灯：50Hz 足够，且不会持续占用主循环 */
+    /* 指示灯：使能=绿，急停=红，未使能=灭 */
     if ((uint32_t)(now - ledTick) >= 20u)
     {
         ledTick = now;
-        WS2812_Ctrl(PDOChannel0x7000.R, PDOChannel0x7000.G, PDOChannel0x7000.B);
+        if (dbgCtrlWord & CTRL_ESTOP)
+            WS2812_Ctrl(60, 0, 0);
+        else if (dbgCtrlWord & CTRL_ENABLE)
+            WS2812_Ctrl(0, 60, 0);
+        else
+            WS2812_Ctrl(0, 0, 0);
     }
 }
 
 uint32_t eee;
+
 void APPL_InputMapping(UINT16* pData)
 {
-    uint8_t* pDIStart = (uint8_t*)(&PDIChannel0x6000) + sizeof(PDIChannel0x6000.u16SubIndex0);
-    memcpy(pData, pDIStart, Data2PC_NUM);
-    memset(&PDIChannel0x6000.AX1, 0, Data2PC_NUM);
-    uint8_t* pDIRMDAStart = (uint8_t*)(&RMDAPDIChannel0x60F0) + sizeof(RMDAPDIChannel0x60F0.u16SubIndex0);
-    /* pData 是 UINT16*，这里必须按字节偏移，否则会越界覆盖 SSC 的内部变量 */
-    memcpy((uint8_t *)pData + Data2PC_NUM + 2, pDIRMDAStart, Data2PCRMDA_NUM);
-    memset(&RMDAPDIChannel0x60F0.R1, 0, Data2PCRMDA_NUM);
+    uint8_t *d = (uint8_t *)pData;
+
+    /* 0x6000: 204 B，紧邻其后是 0x60F0 的 212 B，共 416 B */
+    memcpy(d, (uint8_t *)&PDIChannel0x6000 + sizeof(PDIChannel0x6000.u16SubIndex0), IN_0x6000_LEN);
+    memset(&PDIChannel0x6000.AX1, 0, IN_0x6000_LEN);
+
+    memcpy(d + IN_0x6000_LEN,
+           (uint8_t *)&RMDAPDIChannel0x60F0 + sizeof(RMDAPDIChannel0x60F0.u16SubIndex0),
+           IN_0x60F0_LEN);
+    memset(&RMDAPDIChannel0x60F0.R1, 0, IN_0x60F0_LEN);
     eee++;
 }
 
 void APPL_OutputMapping(UINT16* pData)
 {
-    memset(&PDOChannel0x7000.R, 0, Data2MCU_NUM);
-    uint8_t* pDOStart = (uint8_t*)(&PDOChannel0x7000.u16SubIndex0) + sizeof(PDOChannel0x7000.u16SubIndex0);
-    memcpy(pDOStart, pData, Data2MCU_NUM);
-    memset(&RMUIPDOChannel0x7050.U1, 0, Data2MCURMUI_NUM);
-    uint8_t* pDOSRMUIStart = (uint8_t*)(&RMUIPDOChannel0x7050.u16SubIndex0) + sizeof(RMUIPDOChannel0x7050.u16SubIndex0);
-    /* 同样按字节偏移，避免越界 */
-    memcpy(pDOSRMUIStart, (uint8_t *)pData + Data2MCU_NUM + 2, Data2MCURMUI_NUM);
+    uint8_t *s = (uint8_t *)pData;
+
+    memcpy((uint8_t *)&PDOChannel0x7000 + sizeof(PDOChannel0x7000.u16SubIndex0), s, OUT_0x7000_LEN);
+    memcpy((uint8_t *)&RMUIPDOChannel0x7050 + sizeof(RMUIPDOChannel0x7050.u16SubIndex0),
+           s + OUT_0x7000_LEN, OUT_0x7050_LEN);
+
+    dbgCtrlWord = s[OUT_CTRL_OFF];
 }
 
 void APPL_Application(void) {}
@@ -184,10 +262,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
         PDI_Isr();
 
-        /* 官方 SSC 约定：INT_STS 由读取 AL Event(0x0220) 自动清除，
-           不再手动写 0x58（写 1 清除会吞掉此间新到的事件）。
-           若实测 IRQ 线卡死/风暴，再评估恢复手动清除。 */
-
         ddd++;
 #endif
     }
@@ -211,144 +285,85 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     }
 }
 
-void FDCAN1_RxFifo0RxHandler(uint32_t Identifier, uint8_t Data[8])
+/* 电机反馈（达妙 MIT 8 字节）：
+   D0=ID, D1=ERR<<4|pos[15:12], D2=pos[11:4], D3=pos[3:0]<<4|vel[11:8],
+   D4=vel[7:0], D5=tor[11:4], D6=tor[3:0]<<4|Tmos[11:8], D7=Tmos[7:0] */
+static void Motor_OnFeedback(uint8_t bus, uint32_t id, const uint8_t *d)
 {
-    switch(Identifier)
+    uint32_t i, axis = 0;
+    uint16_t pos_u, vel_u, tor_u, status;
+    float pos_rad, vel_rad;
+    int32_t pos_centi_deg;
+    uint8_t *slot;
+
+    for (i = 0; i < AXIS_COUNT; i++)
     {
-        case 0x201:
-            PDIChannel0x6000.C1AID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C1AID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C1A1, Data, 8);
+        if (gMotorCfg[i].id != 0u && Motor_BusOf(i + 1u) == bus && gMotorCfg[i].id == id)
+        {
+            axis = i + 1u;
             break;
-
-        case 0x202:
-            PDIChannel0x6000.C1BID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C1BID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C1B1, Data, 8);
-            break;
-
-        case 0x203:
-            PDIChannel0x6000.C1CID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C1CID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C1C1, Data, 8);
-            break;
-
-        case 0x204:
-            PDIChannel0x6000.C1DID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C1DID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C1D1, Data, 8);
-            break;
-
-        case 0x205:
-            PDIChannel0x6000.C1EID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C1EID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C1E1, Data, 8);
-            break;
-
-        case 0x206:
-            PDIChannel0x6000.C1FID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C1FID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C1F1, Data, 8);
-            break;
-        default:
-            break;
+        }
     }
+    if (axis == 0u) return;
+
+    pos_u = (uint16_t)(((uint16_t)(d[1] & 0x0Fu) << 12) | ((uint16_t)d[2] << 4) | ((uint16_t)d[3] >> 4));
+    vel_u = (uint16_t)(((uint16_t)(d[3] & 0x0Fu) << 8) | d[4]);
+    tor_u = (uint16_t)(((uint16_t)d[5] << 4) | ((uint16_t)d[6] >> 4));
+
+    {
+        const MotorCfg *m = &gMotorCfg[axis - 1u];
+        pos_rad = (float)pos_u * (2.0f * m->pmax) / 65535.0f - m->pmax;
+        vel_rad = (float)vel_u * (2.0f * m->vmax) / 4095.0f - m->vmax;
+        (void)tor_u;
+    }
+
+    /* 弧度 -> 0.01 度 / 0.1 度每秒 */
+    pos_centi_deg = (int32_t)(pos_rad * 57.2957795f * 100.0f);
+
+    status = 0x0020u;                            /* bit5: 本周期反馈有效 */
+    if (d[0] == id) status |= 0x0001u;           /* bit0: 使能（回读到自身 ID） */
+    if ((d[1] >> 4) == 0x0Fu) status |= 0x0002u; /* bit1: 故障（ERR=0xF） */
+
+    /* C1AID1 位于 PDO 偏移 12（轴 1 的槽首），其余轴按 10 B 步进 */
+    slot = (uint8_t *)&PDIChannel0x6000.C1AID1 + (IN_AXIS_OFF(axis) - IN_AXIS_OFF(1u));
+    slot[0] = (uint8_t)(id & 0xFF);
+    slot[1] = (uint8_t)((id >> 8) & 0xFF);
+    slot[2] = (uint8_t)(pos_centi_deg & 0xFF);
+    slot[3] = (uint8_t)((pos_centi_deg >> 8) & 0xFF);
+    slot[4] = (uint8_t)((pos_centi_deg >> 16) & 0xFF);
+    slot[5] = (uint8_t)((pos_centi_deg >> 24) & 0xFF);
+    slot[6] = (uint8_t)((int16_t)(vel_rad * 57.2957795f * 10.0f) & 0xFF);
+    slot[7] = (uint8_t)(((int16_t)(vel_rad * 57.2957795f * 10.0f) >> 8) & 0xFF);
+    slot[8] = (uint8_t)(status & 0xFF);
+    slot[9] = (uint8_t)(status >> 8);
+
+    dbgRxCnt++;
+    if (axis == 1u) memcpy((void *)dbgAx1, slot, 10);
 }
 
-void FDCAN3_RxFifo0RxHandler(uint32_t Identifier, uint8_t Data[8])
+void FDCAN1_RxFifo0RxHandler(uint32_t Identifier, uint8_t Data[8])
 {
-    switch(Identifier)
-    {
-        case 0x201:
-            PDIChannel0x6000.C3AID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C3AID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C3A1, Data, 8);
-            break;
-
-        case 0x202:
-            PDIChannel0x6000.C3BID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C3BID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C3B1, Data, 8);
-            break;
-
-        case 0x203:
-            PDIChannel0x6000.C3CID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C3CID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C3C1, Data, 8);
-            break;
-
-        case 0x204:
-            PDIChannel0x6000.C3DID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C3DID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C3D1, Data, 8);
-            break;
-
-        case 0x205:
-            PDIChannel0x6000.C3EID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C3EID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C3E1, Data, 8);
-            break;
-
-        case 0x206:
-            PDIChannel0x6000.C3FID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C3FID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C3F1, Data, 8);
-            break;
-        default:
-            break;
-    }
+    Motor_OnFeedback(0, Identifier, Data);
 }
 
 void FDCAN2_RxFifo1RxHandler(uint32_t Identifier, uint8_t Data[8])
 {
-    switch(Identifier)
-    {
-        case 0x201:
-            PDIChannel0x6000.C2AID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C2AID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C2A1, Data, 8);
-            break;
+    Motor_OnFeedback(1, Identifier, Data);
+}
 
-        case 0x202:
-            PDIChannel0x6000.C2BID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C2BID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C2B1, Data, 8);
-            break;
-
-        case 0x203:
-            PDIChannel0x6000.C2CID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C2CID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C2C1, Data, 8);
-            break;
-
-        case 0x204:
-            PDIChannel0x6000.C2DID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C2DID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C2D1, Data, 8);
-            break;
-
-        case 0x205:
-            PDIChannel0x6000.C2EID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C2EID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C2E1, Data, 8);
-            break;
-
-        case 0x206:
-            PDIChannel0x6000.C2FID1 = (uint16_t)Identifier & 0x00ff;
-            PDIChannel0x6000.C2FID2 = (uint16_t)(Identifier >> 8) & 0x00ff;
-            memcpy(&PDIChannel0x6000.C2F1, Data, 8);
-            break;
-        default:
-            break;
-    }
+void FDCAN3_RxFifo0RxHandler(uint32_t Identifier, uint8_t Data[8])
+{
+    Motor_OnFeedback(2, Identifier, Data);
 }
 
 void USER_USART7_RxCallback(uint8_t* data, uint16_t Size)
 {
+    if (Size > 21u) Size = 21u;
     memcpy(&PDIChannel0x6000.VT1, data, Size);
 }
 
 void USER_USART1_RxCallback(uint8_t* data, uint16_t Size)
 {
+    if (Size > IN_0x60F0_LEN) Size = IN_0x60F0_LEN;
     memcpy(&RMDAPDIChannel0x60F0.R1, data, Size);
 }
