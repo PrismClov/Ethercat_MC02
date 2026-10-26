@@ -18,9 +18,25 @@ PC 侧主站（C + SOEM 2.0.0）与实时控制界面（Python + PySide6 + pyqtg
 | `mahony_ahrs.c` | 独立的 Mahony 姿态进程（读 `ecat_imu`） |
 | `build.cmd` | 重新编译主站工具 |
 | `run_ui.cmd` | 启动界面 |
+| `webui/` | 浏览器版（零依赖，原生 JS 移植 NOIR 运动模型） |
+| `webui-react/` | 浏览器版（真 React + `noir-ui` 组件库） |
+| `run_web.cmd` | 启动零依赖 Web 版（8765） |
+| `run_react.cmd` | 启动 React 版（8766，需要先构建） |
+| `build_react.cmd` | 构建 React 版 |
 
 其余 `ecat_ws2812*.c`、`diag.c`、`reg_read.c` 等是调试阶段的辅助程序，保留作参考。
 `*.jlink` 是 J-Link 命令脚本，`reset_only.jlink` / `flash_spi40.jlink` 仍在使用。
+
+## 三个界面
+
+| 版本 | 入口 | 特点 |
+|---|---|---|
+| Qt / PySide6 | `run_ui.cmd` | 原生、最省资源；弹簧滑块 + 数字滚动，图表 10 fps |
+| Web 零依赖 | `run_web.cmd` | HTML+CSS+JS，单个 Python 桥；用真 `mix-blend-mode: difference` 做指示块 |
+| Web React | `run_react.cmd` | 直接 `npm i github:HanRabbit/NOIR-UI`，用它的 `Segmented / NumberFlow / Stat / toast` |
+
+Web 版的数据通路：`ecat_live.exe` ↔ 共享内存 ↔ `webui/serve.py`（SSE 30 Hz）↔ 浏览器。
+三个界面可以同时开着看同一份数据，但**同一时刻只能有一个主站进程**。
 
 ## 编译
 

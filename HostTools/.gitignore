@@ -22,6 +22,11 @@
 __pycache__/
 *.py[cod]
 
+# Web 前端
+node_modules/
+dist/
+*.local
+
 # 编辑器
 .vscode/
 .idea/

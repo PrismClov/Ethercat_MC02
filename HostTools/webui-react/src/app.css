@@ -1,0 +1,157 @@
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--nr-bg);
+  color: var(--nr-fg);
+  font: 13px/1.35 var(--nr-font);
+}
+
+.app {
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.mono { font-family: var(--nr-mono); font-size: 9pt; }
+.dim { color: var(--nr-fg-3); }
+
+/* ── 顶栏 ── */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--nr-raised);
+  border: 1px solid var(--nr-line);
+  border-radius: 12px;
+  flex: none;
+}
+.stats { display: flex; gap: 8px; margin-left: auto; }
+.stats .nr-stat {
+  min-width: 118px;
+  padding: 9px 12px 8px;
+  gap: 5px;
+}
+.stats .nr-stat-value { font-size: 22px; letter-spacing: -.4px; }
+.stats .nr-stat-label,
+.stats .nr-stat-sub { font-size: 10.5px; }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 9pt var(--nr-mono);
+  color: var(--nr-fg-2);
+  border: 1px solid var(--nr-line-strong);
+  border-radius: 999px;
+  padding: 4px 12px;
+  white-space: nowrap;
+}
+.pill.ok { color: #fff; }
+.pill.warn { color: #e0a35a; }
+
+/* ── 主体 ── */
+main {
+  display: grid;
+  grid-template-columns: 680px 1fr;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+.col { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+
+.panel { padding: 14px 12px; }
+.panel.grow { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+.row > .nr-btn { flex: 1; }
+
+.nr-btn.danger {
+  background: #b3261e;
+  border-color: #b3261e;
+  color: #fff;
+  font-weight: 600;
+}
+.nr-btn.danger:hover:not(:disabled) { background: #c9332a; border-color: #c9332a; }
+
+/* ── 轴表 ── */
+.axis { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.axis-head, .axis-row {
+  display: grid;
+  grid-template-columns: 34px repeat(5, 1fr) 1fr 56px;
+  align-items: center;
+  gap: 2px;
+}
+.axis-head {
+  font: 8pt var(--nr-mono);
+  color: var(--nr-fg-3);
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--nr-line);
+  text-align: right;
+}
+.axis-head span:first-child { text-align: center; }
+.axis-body { overflow: auto; flex: 1; min-height: 0; }
+.axis-row { padding: 1px 4px; border-bottom: 1px solid rgba(255,255,255,.05); }
+.axis-row input {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  color: #fff;
+  font: 12px var(--nr-mono);
+  text-align: right;
+  padding: 3px 2px;
+  outline: 0;
+  border-radius: 4px;
+  -moz-appearance: textfield;
+}
+.axis-row input:focus { background: rgba(255,255,255,.06); }
+.axis-row .idx { font: 12px var(--nr-mono); color: var(--nr-fg-3); text-align: center; }
+.axis-row .fb { font: 12px var(--nr-mono); color: var(--nr-fg-2); text-align: right; }
+.axis-row .st { font: 11px var(--nr-mono); color: var(--nr-fg-3); text-align: center; }
+.axis-row .st.on { color: #fff; }
+.axis-row .st.err { color: #ff6b6b; }
+
+/* ── 曲线 ── */
+.plots {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 10px;
+  min-height: 0;
+}
+.plot-card { position: relative; padding: 0 !important; overflow: hidden; }
+.plot-card canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.plot-wrap { position: relative; min-height: 0; display: flex; }
+.plot-wrap > .plot-card { flex: 1; }
+
+.axis-pick {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 3;
+  background: transparent;
+  color: #fff;
+  border: 1px solid var(--nr-line);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font: 10px var(--nr-mono);
+  outline: 0;
+}
+.axis-pick option { background: #070707; }
+
+input[type=color] {
+  width: 52px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--nr-line);
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+
+::-webkit-scrollbar { width: 9px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 99px; }
+::-webkit-scrollbar-track { background: transparent; }

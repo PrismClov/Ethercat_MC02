@@ -19,8 +19,8 @@ import time
 import ctypes
 import numpy as np
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import QEasingCurve, QRectF, Qt, QTimer, QVariantAnimation, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -86,6 +86,204 @@ def set_process_priority(pid: int, priority_class: int) -> bool:
 
 
 HIGH_PRIORITY_CLASS = 0x00000080
+
+# ---------------------------------------------------------------- NOIR 色板
+# 只有黑白 + 透明度阶梯；红色仅用于急停/故障这类安全语义。
+C_BG        = "#000000"
+C_RAISED    = "#070707"
+C_FG        = "#ffffff"
+C_FG2       = QColor(255, 255, 255, 148)   # .58
+C_FG3       = QColor(255, 255, 255, 97)    # .38
+C_FG4       = QColor(255, 255, 255, 51)    # .20
+C_LINE      = QColor(255, 255, 255, 41)    # .16
+C_LINE_STR  = QColor(255, 255, 255, 71)    # .28
+C_FILL      = QColor(255, 255, 255, 20)    # .08
+C_DANGER    = "#ff6b6b"
+C_WARN      = "#e0a35a"
+
+CURVE_1 = (255, 255, 255)        # 白
+CURVE_2 = (255, 255, 255, 148)   # 58%
+CURVE_3 = (255, 255, 255, 90)    # 35%
+
+MONO = "Consolas"
+
+
+class NoirSegmented(QWidget):
+    """NOIR 分段控件：临界阻尼弹簧 + 速度拖影，墨块经过处文字逐格反色。"""
+
+    changed = Signal(object)
+
+    K = 520.0
+    ZETA = 0.95
+    DT = 1.0 / 60.0
+
+    def __init__(self, items, parent=None):
+        super().__init__(parent)
+        self._items = list(items)          # [(label, value), ...]
+        self._index = 0
+        self._x = 2.0
+        self._target = 2.0
+        self._v = 0.0
+        self._trail = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._step)
+        self.setFixedHeight(32)
+        self.setMinimumWidth(58 * len(self._items) + 8)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def _seg_w(self) -> float:
+        return (self.width() - 4) / max(1, len(self._items))
+
+    def _target_x(self, i: int) -> float:
+        return 2 + i * self._seg_w()
+
+    def _step(self) -> None:
+        c = 2.0 * (self.K ** 0.5) * self.ZETA
+        a = self.K * (self._target - self._x) - c * self._v
+        self._v += a * self.DT
+        self._x += self._v * self.DT
+        speed = abs(self._v)
+        # NOIR 的虚拟快门：拖影 = 速度 × 48ms，且不超过剩余距离太多
+        self._trail = min(speed * 0.048, abs(self._target - self._x) + 10.0)
+        if abs(self._target - self._x) < 0.5 and speed < 8.0:
+            self._x = self._target
+            self._v = 0.0
+            self._trail = 0.0
+            self._timer.stop()
+        self.update()
+
+    def value(self):
+        return self._items[self._index][1]
+
+    def currentText(self) -> str:
+        return self._items[self._index][0]
+
+    def currentIndex(self) -> int:
+        return self._index
+
+    def setCurrentIndex(self, i: int, animate: bool = True) -> None:
+        i = max(0, min(len(self._items) - 1, int(i)))
+        if i == self._index:
+            return
+        self._index = i
+        self._target = self._target_x(i)
+        if animate and self.isVisible():
+            if not self._timer.isActive():
+                self._timer.start()
+        else:
+            self._x = self._target
+            self._v = 0.0
+            self._trail = 0.0
+            self.update()
+        self.changed.emit(self.value())
+
+    def setValue(self, value) -> None:
+        for i, (_, v) in enumerate(self._items):
+            if v == value:
+                self.setCurrentIndex(i, animate=False)
+                return
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._target = self._target_x(self._index)
+        self._x = self._target
+        self._v = 0.0
+        self._trail = 0.0
+
+    def mousePressEvent(self, e):
+        if not self.isEnabled():
+            return
+        i = int(max(0, min(len(self._items) - 1, (e.position().x() - 2) // self._seg_w())))
+        self.setCurrentIndex(i)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+
+        p.setPen(QPen(C_LINE, 1))
+        p.setBrush(QBrush(QColor(255, 255, 255, 10)))
+        p.drawRoundedRect(r, 7, 7)
+
+        seg_w = self._seg_w()
+        h = self.height() - 4
+
+        if self.isEnabled():
+            stretch = 1.0 + min(0.42, self._trail / max(1.0, seg_w) * 0.55)
+            w = seg_w * stretch
+            if self._v >= 0:
+                x0 = self._x - (w - seg_w)
+            else:
+                x0 = self._x
+
+            # 两片拖影：透明度随速度衰减，读起来像 60fps 的快门残影
+            if self._trail > 1.5:
+                for k, alpha in ((0.012, 30), (0.026, 14)):
+                    gx = x0 - self._v * k
+                    p.setPen(Qt.NoPen)
+                    p.setBrush(QBrush(QColor(255, 255, 255, alpha)))
+                    p.drawRoundedRect(QRectF(gx, 2, w, h), 5.5, 5.5)
+
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(QColor(255, 255, 255)))
+            thumb = QRectF(x0, 2, w, h)
+            p.drawRoundedRect(thumb, 5.5, 5.5)
+        else:
+            thumb = QRectF(-100, 0, 0, 0)
+
+        f = QFont(MONO, 9)
+        f.setWeight(QFont.DemiBold)
+        p.setFont(f)
+        for i, (label, _) in enumerate(self._items):
+            cell = QRectF(2 + i * seg_w, 0, seg_w, self.height())
+            if not self.isEnabled():
+                p.setPen(C_FG4)
+            else:
+                # 墨块覆盖超过一半就把这格文字反色
+                inter = min(cell.right(), thumb.right()) - max(cell.left(), thumb.left())
+                covered = inter > seg_w * 0.45
+                p.setPen(QColor(0, 0, 0) if covered else C_FG2)
+            p.drawText(cell, Qt.AlignCenter, label)
+        p.end()
+
+
+class RollingNumber(QLabel):
+    """数值变化时按 60fps 指数逼近，像里程表一样滚过去，而不是直接跳。"""
+
+    def __init__(self, fmt: str = "{:.0f}", parent=None):
+        super().__init__("-", parent)
+        self._fmt = fmt
+        self._cur = None
+        self._target = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._step)
+
+    def setValue(self, v) -> None:
+        v = float(v)
+        if self._cur is None:
+            self._cur = v
+            self._target = v
+            self.setText(self._fmt.format(v))
+            return
+        self._target = v
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def clear(self) -> None:
+        self._timer.stop()
+        self._cur = None
+        self.setText("-")
+
+    def _step(self) -> None:
+        d = self._target - self._cur
+        if abs(d) < 0.05:
+            self._cur = self._target
+            self._timer.stop()
+        else:
+            self._cur += d * 0.24
+        self.setText(self._fmt.format(self._cur))
 
 
 class SharedMem:
@@ -282,18 +480,20 @@ WINDOW_S = 30.0
 class HistoryPlot(pg.PlotWidget):
     def __init__(self, title, ylabel, colors, names, points: int = 1500):
         super().__init__()
-        self.setBackground("#0f1116")
-        self.showGrid(x=True, y=True, alpha=0.25)
-        self.setTitle(title, color="#c8d2e0", size="9pt")
+        self.setBackground(C_BG)
+        self.showGrid(x=True, y=True, alpha=0.12)
+        self.setTitle(title, color="#9a9a9a", size="9pt")
         self.setLabel("left", ylabel)
-        self.getAxis("left").setTextPen("#8a94a6")
-        self.getAxis("bottom").setTextPen("#8a94a6")
-        self.getAxis("left").setPen("#2a303b")
-        self.getAxis("bottom").setPen("#2a303b")
+        self.getAxis("left").setTextPen(C_FG3)
+        self.getAxis("bottom").setTextPen(C_FG3)
+        self.getAxis("left").setPen(C_LINE)
+        self.getAxis("bottom").setPen(C_LINE)
         self.getAxis("left").setWidth(52)
         self.showAxis("top", False)
         self.showAxis("right", False)
-        self.addLegend(offset=(-10, 8), labelTextColor="#c8d2e0")
+        lg = self.addLegend(offset=(-10, 8), labelTextColor=C_FG2)
+        lg.setBrush(pg.mkBrush(0, 0, 0, 0))
+        lg.setPen(pg.mkPen(None))
         self.curves = [self.plot([], [], pen=pg.mkPen(c, width=1.6), name=n)
                        for c, n in zip(colors, names)]
         self.ring = RingBuf(points, len(names))
@@ -323,7 +523,7 @@ class HistoryPlot(pg.PlotWidget):
 class RpyPlots(QWidget):
     """roll / pitch / yaw 三个独立子图，各自独立 Y 轴。"""
 
-    NAMES = [("roll", "#e0a35a"), ("pitch", "#5ad07a"), ("yaw", "#8a7ae0")]
+    NAMES = [("roll", "#ffffff"), ("pitch", "#9a9a9a"), ("yaw", "#5c5c5c")]
 
     def __init__(self, points: int = 1500):
         super().__init__()
@@ -332,11 +532,13 @@ class RpyPlots(QWidget):
         outer.setSpacing(0)
 
         head = QLabel("姿态 (Mahony) — 三轴分开显示")
-        head.setStyleSheet("color:#c8d2e0; padding:2px 6px;")
+        head.setStyleSheet(
+            f"color:rgba(255,255,255,97); padding:3px 8px;"
+            f"font-family:'{MONO}'; font-size:8pt;")
         outer.addWidget(head)
 
         glw = pg.GraphicsLayoutWidget()
-        glw.setBackground("#0f1116")
+        glw.setBackground(C_BG)
         outer.addWidget(glw, 1)
 
         self.plots = []
@@ -346,12 +548,12 @@ class RpyPlots(QWidget):
 
         for i, (name, color) in enumerate(self.NAMES):
             p = glw.addPlot(row=i, col=0)
-            p.showGrid(x=True, y=True, alpha=0.25)
+            p.showGrid(x=True, y=True, alpha=0.12)
             p.setLabel("left", "°")
-            p.getAxis("left").setTextPen("#8a94a6")
-            p.getAxis("bottom").setTextPen("#8a94a6")
-            p.getAxis("left").setPen("#2a303b")
-            p.getAxis("bottom").setPen("#2a303b")
+            p.getAxis("left").setTextPen(C_FG3)
+            p.getAxis("bottom").setTextPen(C_FG3)
+            p.getAxis("left").setPen(C_LINE)
+            p.getAxis("bottom").setPen(C_LINE)
             p.getAxis("left").setWidth(46)
             p.showAxis("top", False)
             p.showAxis("right", False)
@@ -438,6 +640,7 @@ class MainWindow(QMainWindow):
         lay.setSpacing(8)
 
         self.btn_start = QPushButton("启动主站")
+        self.btn_start.setObjectName("primary")
         self.btn_start.setMinimumWidth(96)
         self.btn_start.clicked.connect(self.start_master)
         self.btn_stop = QPushButton("停止主站")
@@ -445,31 +648,34 @@ class MainWindow(QMainWindow):
         self.btn_reset = QPushButton("复位从站")
         self.btn_reset.clicked.connect(self.reset_slave)
 
-        self.cmb_cycle = QComboBox()
-        self.cmb_cycle.addItem("500 us (2 kHz)", 500000)
-        self.cmb_cycle.addItem("1000 us (1 kHz)", 1000000)
-        self.cmb_cycle.addItem("333 us (3 kHz)", 333333)
-        self.cmb_cycle.currentIndexChanged.connect(self.on_cycle_changed)
+        self.cmb_cycle = NoirSegmented([
+            ("2 kHz", 500000),
+            ("1 kHz", 1000000),
+            ("3 kHz", 333333),
+        ])
+        self.cmb_cycle.changed.connect(self.on_cycle_changed)
 
         self.lbl_state = QLabel("主站：未运行")
-        self.lbl_state.setStyleSheet(
-            "color:#ff8a8a; font-weight:700; padding:4px 10px;"
-            "background:#2a1a1a; border:1px solid #4a2626; border-radius:10px;")
+        self._set_pill("主站：未运行", "rgba(255,255,255,148)")
 
         self.card_wkc, self.lbl_wkc, _ = self._stat_card("WKC")
-        self.card_al, self.lbl_al, _ = self._stat_card("AL 状态")
+        self.card_al, self.lbl_al, _ = self._stat_card("AL 状态", numeric=False)
         self.card_fps, self.lbl_fps, _ = self._stat_card("帧率")
-        self.card_gap, self.lbl_gap, _ = self._stat_card("最大间隔")
-        self.card_rtt, self.lbl_rtt, self.det_rtt = self._stat_card("RTT 含调度")
-        self.card_mcu, self.lbl_mcu, self.det_mcu = self._stat_card("MCU 处理")
+        self.card_gap, self.lbl_gap, _ = self._stat_card("最大间隔", "{:.1f} ms")
+        self.card_rtt, self.lbl_rtt, self.det_rtt = self._stat_card("RTT 含调度", "{:.0f}us")
+        self.card_mcu, self.lbl_mcu, self.det_mcu = self._stat_card("MCU 处理", "{:.0f}us")
         self.lbl_alc = QLabel("ALC -")
-        self.lbl_alc.setStyleSheet("color:#6f7b8c;")
+        self.lbl_alc.setStyleSheet(
+            f"color:rgba(255,255,255,97); font-family:'{MONO}'; font-size:8pt;")
 
         lay.addWidget(self.btn_start)
         lay.addWidget(self.btn_stop)
         lay.addWidget(self.btn_reset)
         lay.addSpacing(6)
-        lay.addWidget(QLabel("周期"))
+        lbl_cycle = QLabel("周期")
+        lbl_cycle.setStyleSheet(
+            f"color:rgba(255,255,255,97); font-family:'{MONO}'; font-size:8pt;")
+        lay.addWidget(lbl_cycle)
         lay.addWidget(self.cmb_cycle)
         lay.addSpacing(14)
         lay.addWidget(self.lbl_state)
@@ -484,20 +690,28 @@ class MainWindow(QMainWindow):
         lay.addStretch(1)
         return box
 
-    def _stat_card(self, title: str):
+    def _stat_card(self, title: str, fmt: str = "{:.0f}", numeric: bool = True):
         frame = QFrame()
-        frame.setObjectName("card")
-        frame.setMinimumHeight(52)
-        frame.setMinimumWidth(104)
+        frame.setObjectName("stat")
+        frame.setMinimumHeight(64)
+        frame.setMinimumWidth(116)
         v = QVBoxLayout(frame)
-        v.setContentsMargins(10, 4, 10, 4)
-        v.setSpacing(0)
+        v.setContentsMargins(12, 7, 12, 7)
+        v.setSpacing(1)
+
+        mono = QFont(MONO, 8)
+        mono.setLetterSpacing(QFont.AbsoluteSpacing, 1.1)
         cap = QLabel(title)
-        cap.setStyleSheet("color:#6f7b8c; font-size:8pt;")
-        val = QLabel("-")
-        val.setStyleSheet("color:#e8edf5; font-size:13pt; font-weight:700;")
+        cap.setFont(mono)
+        cap.setStyleSheet("color:rgba(255,255,255,97); background:transparent;")
+        val = RollingNumber(fmt) if numeric else QLabel("-")
+        f = QFont("Segoe UI", 19)
+        f.setWeight(QFont.DemiBold)
+        val.setFont(f)
+        val.setStyleSheet("color:#ffffff; background:transparent;")
         det = QLabel("")
-        det.setStyleSheet("color:#6f7b8c; font-size:8pt;")
+        det.setFont(QFont(MONO, 8))
+        det.setStyleSheet("color:rgba(255,255,255,97); background:transparent;")
         v.addWidget(cap)
         v.addWidget(val)
         v.addWidget(det)
@@ -509,16 +723,14 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
 
-        ctl = QGroupBox("控制")
+        ctl = QGroupBox("01   控制")
         g = QGridLayout(ctl)
         g.setSpacing(6)
 
         self.btn_enable = QPushButton("全部使能")
         self.btn_disable = QPushButton("全部失能")
         self.btn_estop = QPushButton("急停")
-        self.btn_estop.setStyleSheet(
-            "QPushButton{background:#8b1d1d;color:white;font-weight:700;}"
-            "QPushButton:hover{background:#a82424;}")
+        self.btn_estop.setObjectName("danger")
         self.btn_clear_estop = QPushButton("解除急停")
         self.btn_zero = QPushButton("命令清零")
 
@@ -551,11 +763,12 @@ class MainWindow(QMainWindow):
         g.addLayout(led_row, 3, 0, 1, 2)
 
         self.lbl_ctrl = QLabel("ctrl=0x00")
-        self.lbl_ctrl.setStyleSheet("color:#8a94a6;")
+        self.lbl_ctrl.setStyleSheet(
+            f"color:rgba(255,255,255,97); font-family:'{MONO}'; font-size:8pt;")
         g.addWidget(self.lbl_ctrl, 4, 0, 1, 2)
         lay.addWidget(ctl)
 
-        axbox = QGroupBox("轴命令")
+        axbox = QGroupBox("02   轴命令")
         av = QVBoxLayout(axbox)
         av.setContentsMargins(6, 6, 6, 6)
 
@@ -575,6 +788,8 @@ class MainWindow(QMainWindow):
         for r in range(AXES):
             item = QTableWidgetItem(f"{r + 1:02d}")
             item.setTextAlignment(Qt.AlignCenter)
+            item.setFont(QFont(MONO, 9))
+            item.setForeground(C_FG3)
             self.table.setItem(r, 0, item)
             row = []
             for c, (lo, hi, dec, step) in enumerate([
@@ -589,6 +804,7 @@ class MainWindow(QMainWindow):
                 sp.setDecimals(dec)
                 sp.setSingleStep(step)
                 sp.setValue(0.0)
+                sp.setFont(QFont(MONO, 9))
                 sp.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 sp.valueChanged.connect(self.mark_dirty)
                 self.table.setCellWidget(r, c, sp)
@@ -597,9 +813,12 @@ class MainWindow(QMainWindow):
 
             fbi = QTableWidgetItem("-")
             fbi.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            fbi.setFont(QFont(MONO, 9))
+            fbi.setForeground(C_FG2)
             self.table.setItem(r, 6, fbi)
             sti = QTableWidgetItem("-")
             sti.setTextAlignment(Qt.AlignCenter)
+            sti.setFont(QFont(MONO, 8))
             self.table.setItem(r, 7, sti)
             self.fb_items.append(fbi)
             self.st_items.append(sti)
@@ -607,12 +826,12 @@ class MainWindow(QMainWindow):
         av.addWidget(self.table)
         lay.addWidget(axbox, 1)
 
-        fb = QGroupBox("反馈")
+        fb = QGroupBox("03   反馈")
         fv = QVBoxLayout(fb)
         fb.setFixedHeight(92)
         self.lbl_fb = QLabel("等待主站数据…")
         self.lbl_fb.setFont(QFont("Consolas", 9))
-        self.lbl_fb.setStyleSheet("color:#9fb0c8;")
+        self.lbl_fb.setStyleSheet("color:rgba(255,255,255,148);")
         self.lbl_fb.setMinimumHeight(56)
         fv.addWidget(self.lbl_fb)
         lay.addWidget(fb)
@@ -625,14 +844,14 @@ class MainWindow(QMainWindow):
         grid.setSpacing(6)
 
         self.p_acc = HistoryPlot("加速度 (m/s²)", "m/s²",
-                                 ["#e05a5a", "#5ad07a", "#5a9ce0"],
+                                 [CURVE_1, CURVE_2, CURVE_3],
                                  ["ax", "ay", "az"])
         self.p_gyro = HistoryPlot("角速度 (rad/s)", "rad/s",
-                                  ["#e05a5a", "#5ad07a", "#5a9ce0"],
+                                  [CURVE_1, CURVE_2, CURVE_3],
                                   ["gx", "gy", "gz"])
         self.p_rpy = RpyPlots()
         self.p_axis = HistoryPlot("选中轴", "° / °/s",
-                                  ["#4fc3f7", "#ffb74d"],
+                                  [CURVE_1, CURVE_2],
                                   ["位置 °", "速度 °/s"])
 
         sel = QWidget()
@@ -682,7 +901,7 @@ class MainWindow(QMainWindow):
                     "检测到正在运行的主站（可能是从命令行启动的）。\n"
                     "同一网卡只能有一个主站，请先关闭它。")
                 return
-        cycle = self.cmb_cycle.currentData()
+        cycle = self.cmb_cycle.value()
         try:
             self.master_log = open(os.path.join(HERE, "master.log"), "wb")
             self.master = subprocess.Popen(
@@ -726,7 +945,7 @@ class MainWindow(QMainWindow):
         self._refresh_master_ui()
         self.statusBar().showMessage("主站已停止（从站已回到 INIT），可直接再次启动")
 
-    def on_cycle_changed(self, _index: int) -> None:
+    def on_cycle_changed(self, _value) -> None:
         """运行中改周期：停主站 -> 重新按新周期启动。"""
         if not (self.master and self.master.poll() is None):
             return
@@ -758,15 +977,16 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(not running)
         self.btn_stop.setEnabled(running)
         if running:
-            self._set_pill("主站：运行中", "#5ad07a", "#16281c", "#25502f")
+            self._set_pill("主站：运行中", "rgba(255,255,255,148)")
         else:
-            self._set_pill("主站：未运行", "#ff8a8a", "#2a1a1a", "#4a2626")
+            self._set_pill("主站：未运行", "rgba(255,255,255,97)")
 
-    def _set_pill(self, text: str, fg: str, bg: str, border: str) -> None:
+    def _set_pill(self, text: str, fg: str, bg: str = "", border: str = "") -> None:
         self.lbl_state.setText(text)
         self.lbl_state.setStyleSheet(
-            f"color:{fg}; font-weight:700; padding:4px 10px;"
-            f"background:{bg}; border:1px solid {border}; border-radius:10px;")
+            f"color:{fg}; font-weight:600; padding:4px 12px;"
+            f"background:transparent; border:1px solid rgba(255,255,255,71);"
+            f"border-radius:999px; font-family:'{MONO}'; font-size:9pt;")
 
     # ---------------- 数据轮询 ----------------
     def poll(self) -> None:
@@ -775,7 +995,7 @@ class MainWindow(QMainWindow):
         st = self.shm.read_state()
         if st is None:
             if self.last_state_t and time.time() - self.last_state_t > 1.0:
-                self._set_pill("主站：无数据", "#e0a35a", "#2a2418", "#4a3c22")
+                self._set_pill("主站：无数据", C_WARN)
             return
 
         fresh = st["frame"] != self.last_frame
@@ -783,33 +1003,32 @@ class MainWindow(QMainWindow):
         self.last_state_t = time.time()
 
         al = AL_STATES.get(st["alstat"] & 0x0F, f"0x{st['alstat'] & 0x0F:02X}")
-        self.lbl_wkc.setText(str(st["wkc"]))
+        self.lbl_wkc.setValue(st["wkc"])
         self.lbl_al.setText(al)
         self.lbl_al.setStyleSheet(
-            "color:#5ad07a; font-size:13pt; font-weight:700;"
+            "color:#ffffff; background:transparent;"
             if st["alstat"] == 0x0008 else
-            "color:#e0a35a; font-size:13pt; font-weight:700;")
+            "color:#e0a35a; background:transparent;")
         self.lbl_alc.setText(f"ALC 0x{st['alcode']:04X}   (0x{st['alstat']:04X})")
-        self.lbl_fps.setText(f"{st['fps']:.0f}")
-        self.lbl_gap.setText(f"{st['gap_ms']:.1f} ms")
-        self.lbl_rtt.setText(f"{st['rtt_avg']:.0f}us")
+        self.lbl_fps.setValue(st["fps"])
+        self.lbl_gap.setValue(st["gap_ms"])
+        self.lbl_rtt.setValue(st["rtt_avg"])
         self.det_rtt.setText(f"{st['rtt_min']:.0f} / {st['rtt_max']:.0f}")
-        self.lbl_mcu.setText(f"{st['mcu_avg']:.0f}us")
+        self.lbl_mcu.setValue(st["mcu_avg"])
         self.det_mcu.setText(f"{st['mcu_min']:.0f} / {st['mcu_max']:.0f}")
 
         if not fresh:
             if self.last_fresh_t and time.time() - self.last_fresh_t > 1.0:
                 if "无数据" not in self.lbl_state.text():
-                    self._set_pill("主站：无数据（已停止）",
-                                   "#e0a35a", "#2a2418", "#4a3c22")
-                    self.lbl_wkc.setText("-")
+                    self._set_pill("主站：无数据（已停止）", C_WARN)
+                    self.lbl_wkc.clear()
                     self.lbl_al.setText("-")
                     self.lbl_alc.setText("ALC -")
-                    self.lbl_fps.setText("-")
-                    self.lbl_gap.setText("-")
-                    self.lbl_rtt.setText("-")
+                    self.lbl_fps.clear()
+                    self.lbl_gap.clear()
+                    self.lbl_rtt.clear()
                     self.det_rtt.setText("")
-                    self.lbl_mcu.setText("-")
+                    self.lbl_mcu.clear()
                     self.det_mcu.setText("")
             return
         self.last_fresh_t = time.time()
@@ -817,12 +1036,12 @@ class MainWindow(QMainWindow):
             self.dirty = True
 
         if st["alstat"] != 0x0008:
-            self._set_pill(f"主站：{al}", "#e0a35a", "#2a2418", "#4a3c22")
+            self._set_pill(f"主站：{al}", C_WARN)
         else:
-            self._set_pill("主站：OP", "#5ad07a", "#16281c", "#25502f")
+            self._set_pill("主站：OP", "#ffffff")
             if "启动中" in self.statusBar().currentMessage():
                 self.statusBar().showMessage(
-                    f"主站运行中 · 周期 {self.cmb_cycle.currentData()} ns · "
+                    f"主站运行中 · 周期 {self.cmb_cycle.value()} ns · "
                     f"{self.cmb_cycle.currentText()}")
 
         sel = self.cmb_axis.currentIndex()
@@ -860,11 +1079,11 @@ class MainWindow(QMainWindow):
             self.st_items[i].setText(
                 ("E" if en else "-") + ("F" if flt else "-") + ("V" if vld else "-"))
             if flt:
-                self.st_items[i].setForeground(QColor("#ff6b6b"))
+                self.st_items[i].setForeground(QColor(C_DANGER))
             elif en and vld:
-                self.st_items[i].setForeground(QColor("#5ad07a"))
+                self.st_items[i].setForeground(QColor("#ffffff"))
             else:
-                self.st_items[i].setForeground(QColor("#8a94a6"))
+                self.st_items[i].setForeground(C_FG3)
 
     def refresh_plots(self) -> None:
         for p in (self.p_acc, self.p_gyro, self.p_rpy, self.p_axis):
@@ -938,31 +1157,98 @@ class MainWindow(QMainWindow):
 
 
 APP_QSS = """
-        QWidget { background:#15181e; color:#d6dbe4; font-size:10pt; }
-        QFrame#topbar { background:#171b22; border:1px solid #242b35;
-                        border-radius:8px; }
-        QFrame#card { background:#1a1f27; border:1px solid #2a303b;
-                      border-radius:6px; }
-        QGroupBox { border:1px solid #2a303b; border-radius:6px;
-                    margin-top:10px; padding-top:6px; font-weight:600; }
-        QGroupBox::title { subcontrol-origin:margin; left:8px; padding:0 4px;
-                           color:#8fa3bf; }
-        QPushButton { background:#232a35; border:1px solid #333c4a;
-                      border-radius:4px; padding:5px 10px; }
-        QPushButton:hover { background:#2c3542; }
-        QPushButton:pressed { background:#1b2129; }
-        QPushButton:disabled { color:#5a6270; background:#1a1f27; }
-        QComboBox, QDoubleSpinBox { background:#1b2029; color:#d6dbe4;
-                                    border:1px solid #333c4a;
-                                    border-radius:4px; padding:2px 6px; }
-        QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
-            width:0px; border:none; }
-        QTableWidget { background:#12161c; gridline-color:#242b35;
-                       border:1px solid #2a303b; }
-        QHeaderView::section { background:#1d232c; color:#8fa3bf;
-                               border:none; padding:4px; }
-        QStatusBar { color:#8a94a6; }
-    """
+QMainWindow, QDialog { background: #000000; }
+QWidget { background: transparent; color: #ffffff;
+          font-family: "Microsoft YaHei UI"; font-size: 10pt; }
+
+QFrame#topbar, QFrame#stat {
+    background: #070707;
+    border: 1px solid rgba(255,255,255,41);
+    border-radius: 12px;
+}
+
+QGroupBox {
+    background: #070707;
+    border: 1px solid rgba(255,255,255,41);
+    border-radius: 12px;
+    margin-top: 0px;
+    padding: 26px 10px 10px 10px;
+}
+QGroupBox::title {
+    subcontrol-origin: padding;
+    subcontrol-position: top left;
+    left: 12px; top: 8px; padding: 0 4px;
+    color: rgba(255,255,255,97);
+    font-family: "Consolas"; font-size: 8pt;
+}
+
+QPushButton {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,71);
+    border-radius: 7px;
+    padding: 6px 14px;
+    color: #ffffff;
+}
+QPushButton:hover { border-color: rgba(255,255,255,148); background: rgba(255,255,255,15); }
+QPushButton:pressed { background: rgba(255,255,255,20); }
+QPushButton:disabled { color: rgba(255,255,255,51); border-color: rgba(255,255,255,26); }
+QPushButton#primary { background: #ffffff; border-color: #ffffff; color: #000000; font-weight: 600; }
+QPushButton#primary:hover { background: #e6e6e6; }
+QPushButton#primary:disabled { background: transparent; color: rgba(255,255,255,51);
+                               border-color: rgba(255,255,255,26); }
+QPushButton#danger { background: #b3261e; border-color: #b3261e; color: #ffffff; font-weight: 600; }
+QPushButton#danger:hover { background: #c9332a; }
+
+QComboBox {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,41);
+    border-radius: 7px;
+    padding: 3px 8px;
+    color: #ffffff;
+    font-family: "Consolas"; font-size: 9pt;
+}
+QComboBox:hover { border-color: rgba(255,255,255,71); }
+QComboBox::drop-down { border: none; width: 18px; }
+QComboBox QAbstractItemView {
+    background: #070707;
+    border: 1px solid rgba(255,255,255,41);
+    selection-background-color: rgba(255,255,255,36);
+    color: #ffffff; outline: 0;
+}
+
+QDoubleSpinBox {
+    background: transparent; border: none; color: #ffffff;
+    font-family: "Consolas"; font-size: 9pt; padding: 1px 2px;
+}
+QDoubleSpinBox:focus { border: 1px solid rgba(255,255,255,71); border-radius: 4px; }
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 0px; border: none; }
+
+QTableWidget {
+    background: #000000;
+    border: none;
+    gridline-color: rgba(255,255,255,20);
+    selection-background-color: transparent;
+}
+QTableWidget::item { padding: 2px 4px; border: none; }
+QHeaderView::section {
+    background: #000000;
+    color: rgba(255,255,255,97);
+    border: none;
+    border-bottom: 1px solid rgba(255,255,255,41);
+    padding: 6px 4px;
+    font-family: "Consolas"; font-size: 8pt;
+}
+QTableCornerButton::section { background: #000000; border: none; }
+
+QStatusBar { color: rgba(255,255,255,97); font-family: "Consolas"; font-size: 8pt; }
+
+QScrollBar:vertical { width: 9px; background: transparent; margin: 0; }
+QScrollBar::handle:vertical { background: rgba(255,255,255,36); border-radius: 4px; min-height: 24px; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+
+QToolTip { background: #070707; color: #ffffff; border: 1px solid rgba(255,255,255,41); }
+"""
 
 
 def main() -> int:

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EtherCAT · NOIR</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="bar">
+  <button class="btn primary" id="btn-start">启动主站</button>
+  <button class="btn" id="btn-stop" disabled>停止主站</button>
+  <button class="btn" id="btn-reset">复位从站</button>
+
+  <span class="seglabel">周期</span>
+  <div class="seg" id="seg">
+    <div class="seg-thumb"><div class="seg-ink"></div></div>
+    <button data-v="500000">2 kHz</button>
+    <button data-v="1000000">1 kHz</button>
+    <button data-v="333333">3 kHz</button>
+  </div>
+
+  <div class="pill" id="pill">主站：未运行</div>
+  <div class="alc mono" id="alc">ALC -</div>
+
+  <div class="stats">
+    <div class="stat"><span class="cap">WKC</span><span class="val" id="v-wkc">-</span></div>
+    <div class="stat"><span class="cap">AL 状态</span><span class="val" id="v-al">-</span></div>
+    <div class="stat"><span class="cap">帧率</span><span class="val" id="v-fps">-</span></div>
+    <div class="stat"><span class="cap">最大间隔</span><span class="val" id="v-gap">-</span></div>
+    <div class="stat"><span class="cap">RTT 含调度</span><span class="val" id="v-rtt">-</span><span class="det" id="d-rtt"></span></div>
+    <div class="stat"><span class="cap">MCU 处理</span><span class="val" id="v-mcu">-</span><span class="det" id="d-mcu"></span></div>
+  </div>
+</header>
+
+<main>
+  <section class="col left">
+    <div class="group">
+      <div class="sec">01&nbsp;&nbsp;控制</div>
+      <div class="row">
+        <button class="btn" id="btn-enable">全部使能</button>
+        <button class="btn" id="btn-disable">全部失能</button>
+      </div>
+      <div class="row">
+        <button class="btn danger" id="btn-estop">急停</button>
+        <button class="btn" id="btn-clear">解除急停</button>
+      </div>
+      <div class="row">
+        <button class="btn" id="btn-zero">命令清零</button>
+      </div>
+      <div class="row">
+        <button class="btn" id="btn-ledpick">选颜色</button>
+        <input type="color" id="led" value="#ffffff">
+        <button class="btn" id="btn-ledapply">应用到 LED</button>
+        <button class="btn" id="btn-ledstatus">状态色</button>
+      </div>
+      <div class="mono dim" id="ctrl-label">ctrl=0x00</div>
+    </div>
+
+    <div class="group grow">
+      <div class="sec">02&nbsp;&nbsp;轴命令</div>
+      <div class="axis-head">
+        <span>轴</span><span>位置 °</span><span>速度 °/s</span><span>力矩 A</span>
+        <span>Kp</span><span>Kd</span><span>反馈 °</span><span>状态</span>
+      </div>
+      <div class="axis-body" id="axis-rows"></div>
+    </div>
+
+    <div class="group">
+      <div class="sec">03&nbsp;&nbsp;反馈</div>
+      <div class="mono dim" id="fb">等待主站数据…</div>
+    </div>
+  </section>
+
+  <section class="col plots">
+    <div class="card"><canvas id="c-acc"></canvas></div>
+    <div class="card"><canvas id="c-gyro"></canvas></div>
+    <div class="card"><canvas id="c-rpy"></canvas></div>
+    <div class="card">
+      <div class="card-head"><select id="sel-axis"></select></div>
+      <canvas id="c-axis"></canvas>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
