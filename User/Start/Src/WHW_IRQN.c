@@ -29,6 +29,62 @@
 #define CTRL_HOMING   0x04u
 #define CTRL_MODE_MASK 0xF8u
 
+/* ===== 电机反馈模拟 =====
+   没有实机时置 1：每个 1ms 往 0x6000 的 17 个反馈槽写入合成的
+   位置/速度/状态，主站侧看到的就是"电机在动"。
+   接上真实电机后改成 0（或删掉这段）。 */
+#define MOTOR_SIM_ENABLE   1
+
+#if MOTOR_SIM_ENABLE
+/* 三角波：返回 -amp..+amp，周期 period(ms)，相位按轴错开 */
+static int32_t Motor_SimTri(int32_t t, int32_t period, int32_t amp)
+{
+    int32_t ph = t % period;
+    if (ph < 0) ph += period;
+    if (ph < period / 2)
+        return (ph * amp * 2) / period - amp;
+    return amp - ((ph - period / 2) * amp * 2) / period;
+}
+
+static void Motor_Simulate(uint32_t tick_ms)
+{
+    uint32_t i;
+
+    for (i = 0; i < AXIS_COUNT; i++)
+    {
+        uint32_t axis = i + 1u;
+        int32_t  t   = (int32_t)tick_ms + (int32_t)(axis * 137u);   /* 相位错开 */
+        int32_t  period = 2000;
+        int32_t  amp = (int32_t)(2000u + axis * 200u);              /* 20.00~37.00 度 */
+        int32_t  ph = t % period;
+        int32_t  pos, vel;
+        uint16_t st  = 0x0001u | 0x0020u;                           /* 使能 + 反馈有效 */
+        uint8_t *slot = (uint8_t *)&PDIChannel0x6000.C1AID1
+                      + (IN_AXIS_OFF(axis) - IN_AXIS_OFF(1u));
+
+        if (ph < 0) ph += period;
+        pos = Motor_SimTri(t, period, amp);
+        /* 三角波斜率恒定，直接由相位给出速度，不用相邻帧差分
+           （避免主站拷贝与 ISR 改写撞车造成的撕裂值） */
+        vel = (ph < period / 2) ? (400 * amp / period) : -(400 * amp / period);
+
+        if (vel > 32767)  vel = 32767;
+        if (vel < -32768) vel = -32768;
+
+        slot[0] = (uint8_t)(axis & 0xFF);          /* ID1 */
+        slot[1] = 0;                               /* ID2 */
+        slot[2] = (uint8_t)(pos & 0xFF);           /* 位置 int32，0.01 度 */
+        slot[3] = (uint8_t)((pos >> 8) & 0xFF);
+        slot[4] = (uint8_t)((pos >> 16) & 0xFF);
+        slot[5] = (uint8_t)((pos >> 24) & 0xFF);
+        slot[6] = (uint8_t)((int16_t)vel & 0xFF);  /* 速度 int16，0.1 度/秒 */
+        slot[7] = (uint8_t)(((int16_t)vel >> 8) & 0xFF);
+        slot[8] = (uint8_t)(st & 0xFF);            /* 状态字 */
+        slot[9] = (uint8_t)(st >> 8);
+    }
+}
+#endif
+
 /* ============ 电机配置表 ============
    id = 0 表示该轴未配置，不发送任何帧。
    PMAX/VMAX/TMAX/KT 必须与实际电机一致，否则位置/力矩会被错误量化。 */
@@ -158,6 +214,10 @@ void USER_TIM7_Callback()
 
     for (n = 1u; n <= AXIS_COUNT; n++)
         Motor_SendAxis(n);
+
+#if MOTOR_SIM_ENABLE
+    Motor_Simulate(u32DeviceTickMs);
+#endif
 
     dbgSeq = (uint32_t)((uint8_t *)&PDOChannel0x7000)[OUT_SEQ_OFF]
            | ((uint32_t)((uint8_t *)&PDOChannel0x7000)[OUT_SEQ_OFF + 1u] << 8)
