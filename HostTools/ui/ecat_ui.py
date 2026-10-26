@@ -61,10 +61,29 @@ CMD_SIZE = struct.calcsize(CMD_FMT)
 STATE_NAME = "ecat_ui_state"
 CMD_NAME = "ecat_ui_cmd"
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-SOEM_BIN = os.path.join(HERE, "ecat_live.exe")
+def _find_root(start: str) -> str:
+    """源码运行 / PyInstaller 打包后都能找到 HostTools 根目录。"""
+    d = os.path.abspath(start)
+    for _ in range(5):
+        if os.path.isdir(os.path.join(d, "bin")) and os.path.isdir(os.path.join(d, "webui")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return os.path.abspath(start)
+
+
+if getattr(sys, "frozen", False):
+    HERE = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    HERE = os.path.dirname(os.path.abspath(__file__))
+
+ROOT = _find_root(HERE)
+BIN = os.path.join(ROOT, "bin")
+SOEM_BIN = os.path.join(BIN, "ecat_live.exe")
 JLINK_BIN = r"D:\clover\Embedded\SEGGER\JLink_V810b\JLink.exe"
-JLINK_SCRIPT = os.path.join(HERE, "reset_only.jlink")
+JLINK_SCRIPT = os.path.join(ROOT, "jlink", "reset_only.jlink")
 DEFAULT_IFACE = os.environ.get(
     "ECAT_IFACE", r"\Device\NPF_{9269FBF0-8A17-4A3B-A238-90DF8FACBB09}")
 
@@ -101,9 +120,10 @@ C_FILL      = QColor(255, 255, 255, 20)    # .08
 C_DANGER    = "#ff6b6b"
 C_WARN      = "#e0a35a"
 
+# 界面保持单色，只给数据曲线留三个低饱和色，保证三条线能区分
 CURVE_1 = (255, 255, 255)        # 白
-CURVE_2 = (255, 255, 255, 148)   # 58%
-CURVE_3 = (255, 255, 255, 90)    # 35%
+CURVE_2 = (110, 200, 255)        # 青
+CURVE_3 = (255, 184, 107)        # 琥珀
 
 MONO = "Consolas"
 
@@ -523,7 +543,7 @@ class HistoryPlot(pg.PlotWidget):
 class RpyPlots(QWidget):
     """roll / pitch / yaw 三个独立子图，各自独立 Y 轴。"""
 
-    NAMES = [("roll", "#ffffff"), ("pitch", "#9a9a9a"), ("yaw", "#5c5c5c")]
+    NAMES = [("roll", "#ffffff"), ("pitch", "#6ec8ff"), ("yaw", "#ffb86b")]
 
     def __init__(self, points: int = 1500):
         super().__init__()
@@ -903,10 +923,11 @@ class MainWindow(QMainWindow):
                 return
         cycle = self.cmb_cycle.value()
         try:
-            self.master_log = open(os.path.join(HERE, "master.log"), "wb")
+            os.makedirs(os.path.join(ROOT, "logs"), exist_ok=True)
+            self.master_log = open(os.path.join(ROOT, "logs", "master.log"), "wb")
             self.master = subprocess.Popen(
                 [SOEM_BIN, DEFAULT_IFACE, str(cycle), "--headless"],
-                cwd=HERE,
+                cwd=ROOT,
                 stdout=self.master_log,
                 stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW,

@@ -22,7 +22,9 @@ from urllib.parse import urlparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)          # HostTools/
 SERVE_DIR = HERE
-EXE = os.path.join(ROOT, "ecat_live.exe")
+EXE = os.path.join(ROOT, "bin", "ecat_live.exe")
+JLINK_SCRIPT = os.path.join(ROOT, "jlink", "reset_only.jlink")
+LOG_DIR = os.path.join(ROOT, "logs")
 IFACE = r"\Device\NPF_{9269FBF0-8A17-4A3B-A238-90DF8FACBB09}"
 
 AXES = 17
@@ -117,7 +119,7 @@ def master_action(action, cycle):
             if running:
                 return {"running": True, "error": "stop first"}
             jlink = r"D:\clover\Embedded\SEGGER\JLink_V810b\JLink.exe"
-            script = os.path.join(ROOT, "reset_only.jlink")
+            script = JLINK_SCRIPT
             try:
                 subprocess.run([jlink, "-CommanderScript", script], cwd=ROOT,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -138,7 +140,8 @@ def master_action(action, cycle):
         if running:
             return {"running": True}
 
-        log = open(os.path.join(ROOT, "master.log"), "wb")
+            os.makedirs(LOG_DIR, exist_ok=True)
+            log = open(os.path.join(LOG_DIR, "master.log"), "wb")
         master = subprocess.Popen(
             [EXE, IFACE, str(int(cycle)), "--headless"],
             cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,

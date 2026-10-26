@@ -2,7 +2,7 @@
 
 const AX = 17;
 const MONO = '"DM Mono", Consolas, monospace';
-const CURVES = ['#fff', 'rgba(255,255,255,.58)', 'rgba(255,255,255,.35)'];
+const CURVES = ['#ffffff', '#6ec8ff', '#ffb86b'];
 const WINDOW = 30;              // 秒
 const MAXPTS = 900;             // 30 Hz × 30 s
 

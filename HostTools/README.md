@@ -4,25 +4,31 @@ PC 侧主站（C + SOEM 2.0.0）与实时控制界面（Python + PySide6 + pyqtg
 
 本目录是固件仓库的 `HostTools/`，和从站固件（`User/`、`Core/`）在同一个 git 仓库里。
 
-## 组成
+## 目录
 
-| 文件 | 说明 |
-|---|---|
-| `ecat_live.c` | 主站：PDO 收发、DC SYNC0、共享内存、`--headless` 模式 |
-| `ecat_ui_shm.h` | 主站 ↔ 界面共享内存结构（`ecat_ui_state` / `ecat_ui_cmd`） |
-| `imu_shm.h` | IMU 共享内存 `ecat_imu`（给 Mahony 进程用） |
-| `ecat_ui.py` | 界面：17 轴命令、使能/急停、LED、IMU/RPY/轴曲线、延迟卡片 |
-| `ecat_zero_probe.c` | 回归工具：全速率统计全 0 帧、发帧间隔 |
-| `ecat_dc_sync.c` | DC/周期压力测试工具 |
-| `ecat_sdo_dump.c` | 只读 dump（SM/PDO 配置） |
-| `mahony_ahrs.c` | 独立的 Mahony 姿态进程（读 `ecat_imu`） |
-| `build.cmd` | 重新编译主站工具 |
-| `run_ui.cmd` | 启动界面 |
-| `webui/` | 浏览器版（零依赖，原生 JS 移植 NOIR 运动模型） |
-| `webui-react/` | 浏览器版（真 React + `noir-ui` 组件库） |
-| `run_web.cmd` | 启动零依赖 Web 版（8765） |
-| `run_react.cmd` | 启动 React 版（8766，需要先构建） |
-| `build_react.cmd` | 构建 React 版 |
+```
+HostTools/
+├─ EcatUI.exe          双击启动（原生启动器，用 pythonw 跑 ui\ecat_ui.py）
+├─ build.cmd           编译 C 主站工具 + 探针 + 启动器 -> bin\
+├─ run_ui.cmd          命令行启动 Qt 界面
+├─ run_web.cmd         零依赖 Web 版（8765）
+├─ run_react.cmd       React 版（8766）
+├─ build_react.cmd     构建 React 版
+├─ bin\                ecat_live.exe / ecat_zero_probe.exe / ecat_dc_sync_1ms.exe
+├─ src\                C 源码 + 共享内存头（ecat_live.c, ecat_ui_shm.h, launcher.c ...）
+├─ ui\ecat_ui.py       PySide6 界面
+├─ webui\              零依赖 Web（HTML/CSS/JS + serve.py 桥）
+├─ webui-react\        React + noir-ui
+├─ jlink\              J-Link 脚本（reset_only.jlink / flash_spi40.jlink 在用）
+├─ scripts\            旧的 ps1 / gdb / py 辅助脚本
+├─ docs\               截图
+├─ logs\               运行日志（master.log 等，已忽略）
+└─ legacy\             历史快照
+```
+
+`EcatUI.exe` 是 **66 KB 原生启动器**：找同目录的 `ui\ecat_ui.py`，用
+`D:\clover\Environment\Python\pythonw.exe` 无控制台启动；可用环境变量
+`ECAT_PYTHON` 指向别的 pythonw.exe。
 
 其余 `ecat_ws2812*.c`、`diag.c`、`reg_read.c` 等是调试阶段的辅助程序，保留作参考。
 `*.jlink` 是 J-Link 命令脚本，`reset_only.jlink` / `flash_spi40.jlink` 仍在使用。

@@ -7,7 +7,7 @@ import {
 const AX = 17;
 const WINDOW = 30;
 const MAXPTS = 900;
-const CURVES = ['#fff', 'rgba(255,255,255,.58)', 'rgba(255,255,255,.35)'];
+const CURVES = ['#ffffff', '#6ec8ff', '#ffb86b'];
 const MONO = '"DM Mono", Consolas, monospace';
 const AL = {1: 'INIT', 2: 'PRE-OP', 3: 'BOOT', 4: 'SAFE-OP', 8: 'OP'};
 const CAPTURE = typeof location !== 'undefined' && location.hash === '#capture';

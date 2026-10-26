@@ -2,4 +2,8 @@
 rem EtherCAT 17-axis UI. usage: run_ui.cmd
 setlocal
 cd /d "%~dp0"
-"D:\clover\Environment\Python\python.exe" ecat_ui.py %*
+if exist "bin\EcatUI\EcatUI.exe" (
+  start "" "bin\EcatUI\EcatUI.exe"
+) else (
+  "D:\clover\Environment\Python\python.exe" ui\ecat_ui.py %*
+)
