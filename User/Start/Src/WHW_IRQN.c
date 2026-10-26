@@ -64,6 +64,7 @@ volatile uint32_t dbgSeq      = 0;
 volatile uint32_t dbgTxCnt    = 0;
 volatile uint32_t dbgRxCnt    = 0;
 volatile uint8_t  dbgAx1[10];
+volatile uint16_t dbgImuTemp  = 0;
 
 /* 1ms 节拍：给主循环低速任务（IMU / WS2812）限速用 */
 volatile uint32_t u32DeviceTickMs = 0;
@@ -172,8 +173,13 @@ void APPL_DeviceTask(void)
 
     if ((uint32_t)(now - imuTick) >= 1u)
     {
+        /* 驱动写 14 B：accel(0..5) + gyro(6..11) + 温度(12..13)。
+           PDO 里 IMU 只留 12 B，温度不能直接写进 0x6000（会盖掉第 1 轴槽）。 */
+        static uint8_t imuBuf[14];
         imuTick = now;
-        BMI088_RawInfo_Update(&PDIChannel0x6000.AX1);
+        BMI088_RawInfo_Update(imuBuf);
+        memcpy(&PDIChannel0x6000.AX1, imuBuf, 12);
+        dbgImuTemp = (uint16_t)((uint16_t)imuBuf[12] | ((uint16_t)imuBuf[13] << 8));
     }
 
     /* 指示灯：使能=绿，急停=红，未使能=灭 */
