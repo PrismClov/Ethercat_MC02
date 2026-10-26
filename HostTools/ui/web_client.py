@@ -54,7 +54,8 @@ def main() -> int:
         pass          # 已经有一个客户端在跑，直接连它
 
     view = QWebEngineView()
-    view.load(QUrl(f"http://127.0.0.1:{PORT}/"))
+    suffix = "#capture" if "--capture" in sys.argv else ""
+    view.load(QUrl(f"http://127.0.0.1:{PORT}/{suffix}"))
 
     win = QMainWindow()
     win.setCentralWidget(view)

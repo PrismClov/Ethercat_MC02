@@ -167,7 +167,8 @@ def master_action(action, cycle):
         t0 = time.time()
         while time.time() - t0 < 5.0:
             st = read_state()
-            if st and st.get("online"):
+            # 只有真的进了 OP 才算启动成功（只看帧号推进不够）
+            if st and st.get("online") and (st.get("al", 0) & 0x0F) == 0x08:
                 online = True
                 break
             time.sleep(0.1)

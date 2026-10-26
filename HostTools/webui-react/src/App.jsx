@@ -5,8 +5,8 @@ import {
 } from 'noir-ui';
 
 const AX = 17;
-const WINDOW = 30;
-const MAXPTS = 900;
+const DEF_WIN = 30;
+const MAXPTS = 1800;                 // 60 s @ 30 Hz
 const CURVES = ['#ffffff', '#6ec8ff', '#ffb86b'];
 const MONO = '"DM Mono", Consolas, monospace';
 const AL = {1: 'INIT', 2: 'PRE-OP', 3: 'BOOT', 4: 'SAFE-OP', 8: 'OP'};
@@ -116,26 +116,35 @@ function grid(ctx, x, y, w, h) {
   }
 }
 
-function drawSeries(ctx, x, y, w, h, t, data, color, t0) {
+function drawSeries(ctx, x, y, w, h, t, data, color, t0, win, lo, hi) {
   const n = data.length;
   if (n < 2) return;
-  let lo = Infinity, hi = -Infinity;
-  for (let i = 0; i < n; i++) { if (data[i] < lo) lo = data[i]; if (data[i] > hi) hi = data[i]; }
-  if (!isFinite(lo)) { lo = -1; hi = 1; }
-  if (hi - lo < 1e-6) { lo -= 1; hi += 1; }
-  const pad = (hi - lo) * 0.12;
-  lo -= pad; hi += pad;
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.2;
   ctx.lineJoin = 'round';
   ctx.beginPath();
   for (let i = 0; i < n; i++) {
-    const px = x + w - ((t0 - t[i]) / WINDOW) * w;
+    const px = x + w - ((t0 - t[i]) / win) * w;
     const py = y + h - ((data[i] - lo) / (hi - lo)) * h;
     i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
   }
   ctx.stroke();
 }
+
+/* 每张图的交互状态：null = 自动量程，否则锁定 [y0,y1] */
+const views = new WeakMap();
+function viewOf(c) {
+  let v = views.get(c);
+  if (!v) {
+    v = {auto: true, y0: -1, y1: 1, cur0: -1, cur1: 1,
+         px: 0, py: 0, pw: 1, ph: 1, win: DEF_WIN};
+    views.set(c, v);
+  }
+  return v;
+}
+
+/* 鼠标悬停位置（CSS 像素） */
+const hover = new WeakMap();
 
 const label = (ctx, text, x, y, color = 'rgba(255,255,255,.38)', align = 'left') => {
   ctx.fillStyle = color;
@@ -144,16 +153,99 @@ const label = (ctx, text, x, y, color = 'rgba(255,255,255,.38)', align = 'left')
   ctx.fillText(text, x, y);
 };
 
-function renderFlat(canvas, title, chan, names) {
+function renderFlat(canvas, title, chan, names, unit, win) {
   const {ctx, w, h} = fit(canvas);
   ctx.clearRect(0, 0, w, h);
-  const px = 46, py = 22, pw = w - px - 12, ph = h - py - 24;
+  const px = 54, py = 24, pw = w - px - 14, ph = h - py - 26;
   grid(ctx, px, py, pw, ph);
+  const v = viewOf(canvas);
+  Object.assign(v, {px, py, pw, ph, win});
+
   const t0 = H.t.length ? H.t[H.t.length - 1] : 0;
-  names.forEach((_, i) => drawSeries(ctx, px, py, pw, ph, H.t, H[chan][i], CURVES[i], t0));
-  label(ctx, title, 12, 15, 'rgba(255,255,255,.58)');
-  label(ctx, `-${WINDOW}s`, px, h - 8, 'rgba(255,255,255,.30)');
-  label(ctx, '0', px + pw, h - 8, 'rgba(255,255,255,.30)', 'right');
+
+  // 只统计窗口内的数据，用于自动量程
+  let lo = Infinity, hi = -Infinity;
+  const n = H.t.length;
+  for (let i = 0; i < n; i++) {
+    if (t0 - H.t[i] > win) continue;
+    for (let k = 0; k < names.length; k++) {
+      const y = H[chan][k][i];
+      if (y < lo) lo = y;
+      if (y > hi) hi = y;
+    }
+  }
+  if (!isFinite(lo)) { lo = -1; hi = 1; }
+  if (hi - lo < 1e-6) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.12;
+  lo -= pad; hi += pad;
+
+  if (v.auto) {
+    v.cur0 = lo; v.cur1 = hi;
+  } else {
+    lo = v.y0; hi = v.y1; v.cur0 = lo; v.cur1 = hi;
+  }
+
+  names.forEach((_, i) =>
+    drawSeries(ctx, px, py, pw, ph, H.t, H[chan][i], CURVES[i], t0, win, lo, hi));
+
+  // 标题居中（pyqtgraph 默认居中）
+  label(ctx, title, px + pw / 2, 15, 'rgba(255,255,255,.58)', 'center');
+
+  // Y 轴单位竖排
+  if (unit) {
+    ctx.save();
+    ctx.translate(11, py + ph / 2);
+    ctx.rotate(-Math.PI / 2);
+    label(ctx, unit, 0, 0, 'rgba(255,255,255,.38)', 'center');
+    ctx.restore();
+  }
+
+  // X 轴刻度（-win .. 0），5~10 格
+  const step = win <= 12 ? 2 : win <= 35 ? 5 : 10;
+  for (let s = 0; s <= win; s += step) {
+    const x = px + (pw * s) / win;
+    ctx.strokeStyle = 'rgba(255,255,255,.12)';
+    ctx.beginPath();
+    ctx.moveTo(Math.round(x) + 0.5, py + ph);
+    ctx.lineTo(Math.round(x) + 0.5, py + ph + 3);
+    ctx.stroke();
+    label(ctx, String(s - win), x, h - 8, 'rgba(255,255,255,.30)', 'center');
+  }
+
+  // Y 轴范围提示（左上角，避开 X 刻度）
+  const tag = v.auto ? 'AUTO' : 'LOCK';
+  label(ctx, `${tag}  ${lo.toFixed(1)}~${hi.toFixed(1)}`, px + 4, py + 11,
+        'rgba(255,255,255,.22)', 'left');
+
+  // 十字准星 + 数值
+  const m = hover.get(canvas);
+  if (m && m.x >= px && m.x <= px + pw && m.y >= py && m.y <= py + ph && n > 1) {
+    const tWant = t0 - ((px + pw - m.x) / pw) * win;
+    let idx = n - 1;
+    for (let i = n - 1; i >= 0; i--) { if (H.t[i] <= tWant) { idx = i; break; } }
+    const cx = px + pw - ((t0 - H.t[idx]) / win) * pw;
+    ctx.strokeStyle = 'rgba(255,255,255,.42)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.round(cx) + 0.5, py);
+    ctx.lineTo(Math.round(cx) + 0.5, py + ph);
+    ctx.stroke();
+
+    const parts = names.map((nm, k) => {
+      const y = H[chan][k][idx];
+      return `${nm} ${Number.isFinite(y) ? y.toFixed(2) : '-'}`;
+    });
+    const text = `${(H.t[idx] - t0).toFixed(1)}s   ` + parts.join('   ');
+    ctx.font = `10px ${MONO}`;
+    const tw = ctx.measureText(text).width;
+    const bx = Math.min(Math.max(px + 4, m.x + 12), px + pw - tw - 10);
+    ctx.fillStyle = 'rgba(10,10,11,.92)';
+    ctx.fillRect(bx - 5, py + 4, tw + 10, 18);
+    ctx.strokeStyle = 'rgba(255,255,255,.18)';
+    ctx.strokeRect(bx - 5, py + 4, tw + 10, 18);
+    label(ctx, text, bx, py + 17, 'rgba(255,255,255,.88)', 'left');
+  }
+
   names.forEach((nm, i) => {
     const lx = w - 14 - (names.length - 1 - i) * 42;
     ctx.fillStyle = CURVES[i];
@@ -162,7 +254,7 @@ function renderFlat(canvas, title, chan, names) {
   });
 }
 
-function renderRpy(canvas) {
+function renderRpy(canvas, win) {
   const {ctx, w, h} = fit(canvas);
   ctx.clearRect(0, 0, w, h);
   const names = ['roll', 'pitch', 'yaw'];
@@ -172,35 +264,124 @@ function renderRpy(canvas) {
   names.forEach((nm, i) => {
     const py = 18 + i * band;
     grid(ctx, px, py, pw, band - 10);
-    drawSeries(ctx, px, py, pw, band - 10, H.t, H.rpy[i], CURVES[i], t0);
+    let lo = Infinity, hi = -Infinity;
+    for (let k = 0; k < H.t.length; k++) {
+      if (t0 - H.t[k] > win) continue;
+      const y = H.rpy[i][k];
+      if (y < lo) lo = y;
+      if (y > hi) hi = y;
+    }
+    if (!isFinite(lo)) { lo = -1; hi = 1; }
+    if (hi - lo < 1e-6) { lo -= 1; hi += 1; }
+    const pad = (hi - lo) * 0.12;
+    drawSeries(ctx, px, py, pw, band - 10, H.t, H.rpy[i], CURVES[i], t0,
+               win, lo - pad, hi + pad);
     label(ctx, nm, 12, py + 10, 'rgba(255,255,255,.58)');
   });
   label(ctx, '姿态 · Mahony', 12, 14, 'rgba(255,255,255,.58)');
-  label(ctx, `-${WINDOW}s`, px, h - 6, 'rgba(255,255,255,.30)');
+  label(ctx, `-${win}s`, px, h - 6, 'rgba(255,255,255,.30)');
   label(ctx, '0', px + pw, h - 6, 'rgba(255,255,255,.30)', 'right');
 }
 
-function Plot({title, kind, names}) {
+function Plot({title, kind, names, unit, header, win, onWin}) {
   const ref = useRef(null);
+  const winRef = useRef(win);
+  winRef.current = win;
+
   useEffect(() => {
     let raf, last = 0;
     const tick = (ts) => {
       if (ts - last > 33) {
         last = ts;
         if (ref.current) {
-          if (kind === 'rpy') renderRpy(ref.current);
-          else renderFlat(ref.current, title, kind, names);
+          if (kind === 'rpy') renderRpy(ref.current, winRef.current);
+          else renderFlat(ref.current, title, kind, names, unit, winRef.current);
         }
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [kind, title, names]);
+  }, [kind, title, names, unit]);
+
+  // 滚轮缩放 Y / 拖动平移 / 双击回自动 / Shift+滚轮改时间窗
+  useEffect(() => {
+    const c = ref.current;
+    if (!c) return;
+    const v = viewOf(c);
+    const inside = (mx, my) =>
+      mx >= v.px && mx <= v.px + v.pw && my >= v.py && my <= v.py + v.ph;
+
+    const onMove = (e) => {
+      const r = c.getBoundingClientRect();
+      hover.set(c, {x: e.clientX - r.left, y: e.clientY - r.top});
+    };
+    const onLeave = () => hover.delete(c);
+    const onWheel = (e) => {
+      e.preventDefault();
+      const r = c.getBoundingClientRect();
+      const mx = e.clientX - r.left, my = e.clientY - r.top;
+      if (e.shiftKey) {
+        const opts = [10, 20, 30, 60];
+        const i = opts.indexOf(winRef.current);
+        const ni = Math.max(0, Math.min(opts.length - 1, i + (e.deltaY > 0 ? 1 : -1)));
+        if (opts[ni] !== winRef.current) onWin?.(opts[ni]);
+        return;
+      }
+      if (!inside(mx, my)) return;
+      const cy = (my - v.py) / v.ph;
+      const yAt = v.cur1 - cy * (v.cur1 - v.cur0);
+      const f = e.deltaY > 0 ? 1.18 : 0.85;
+      v.auto = false;
+      v.y0 = yAt - (yAt - v.cur0) * f;
+      v.y1 = yAt + (v.cur1 - yAt) * f;
+    };
+
+    let drag = null;
+    const onDown = (e) => {
+      const r = c.getBoundingClientRect();
+      if (!inside(e.clientX - r.left, e.clientY - r.top)) return;
+      drag = {y: e.clientY, y0: v.cur0, y1: v.cur1};
+      try { c.setPointerCapture(e.pointerId); } catch (_) {}
+    };
+    const onDrag = (e) => {
+      if (!drag) return;
+      const span = drag.y1 - drag.y0;
+      const d = (-(e.clientY - drag.y) / v.ph) * span;
+      v.auto = false;
+      v.y0 = drag.y0 + d;
+      v.y1 = drag.y1 + d;
+    };
+    const onUp = (e) => {
+      drag = null;
+      try { c.releasePointerCapture(e.pointerId); } catch (_) {}
+    };
+    const onDbl = () => { v.auto = true; };
+
+    c.addEventListener('mousemove', onMove);
+    c.addEventListener('mouseleave', onLeave);
+    c.addEventListener('wheel', onWheel, {passive: false});
+    c.addEventListener('pointerdown', onDown);
+    c.addEventListener('pointermove', onDrag);
+    c.addEventListener('pointerup', onUp);
+    c.addEventListener('dblclick', onDbl);
+    return () => {
+      c.removeEventListener('mousemove', onMove);
+      c.removeEventListener('mouseleave', onLeave);
+      c.removeEventListener('wheel', onWheel);
+      c.removeEventListener('pointerdown', onDown);
+      c.removeEventListener('pointermove', onDrag);
+      c.removeEventListener('pointerup', onUp);
+      c.removeEventListener('dblclick', onDbl);
+    };
+  }, [onWin]);
   return (
-    <Card className="plot-card">
-      <canvas ref={ref} />
-    </Card>
+    <div className="plot-wrap">
+      {header && <div className="plot-head">{header}</div>}
+      <Card className="plot-card">
+        <canvas ref={ref} />
+      </Card>
+    </div>
   );
 }
 
@@ -245,6 +426,7 @@ export default function App() {
   const [led, setLed] = useState('#ffffff');
   const [ledMode, setLedMode] = useState(0);
   const [sel, setSel] = useState(0);
+  const [winSec, setWinSec] = useState(DEF_WIN);
   const [fbLine, setFbLine] = useState('等待主站数据…');
 
   const axisRefs = useRef([]);
@@ -324,7 +506,9 @@ export default function App() {
           setFbLine(
             `轴${String(si + 1).padStart(2, '0')}  id=${a.id}  ` +
             `pos=${a.pos.toFixed(2)}°  vel=${a.vel.toFixed(1)}°/s  ` +
-            `status=0x${a.status.toString(16).padStart(4, '0')}`);
+            `status=0x${a.status.toString(16).padStart(4, '0')}\n` +
+            `使能 ${a.status & 1 ? 'Y' : '-'}   故障 ${a.status & 2 ? 'Y' : '-'}   ` +
+            `有效 ${a.status & 0x20 ? 'Y' : '-'}`);
         }
       }
     };
@@ -428,29 +612,65 @@ export default function App() {
           </Card>
         </section>
 
-        <section className="plots">
-          <Plot title="加速度 (m/s²)" kind="acc" names={['ax', 'ay', 'az']} />
-          <Plot title="角速度 (rad/s)" kind="gyro" names={['gx', 'gy', 'gz']} />
-          <Plot title="姿态 · Mahony" kind="rpy" names={['roll', 'pitch', 'yaw']} />
-          <div className="plot-wrap">
-            <Plot title={`选中轴 ${String(sel + 1).padStart(2, '0')}`} kind="axis" names={['位置', '速度']} />
-            <select
-              className="axis-pick"
-              value={sel}
-              onChange={(e) => {
-                selIndex = Number(e.target.value);
-                selRef.current = selIndex;
-                setSel(selIndex);
-                H.axis[0].length = 0;
-                H.axis[1].length = 0;
+        <div className="plots-wrap">
+          <div className="charts-ctl">
+            <span>窗口</span>
+            {[10, 20, 30, 60].map((s) => (
+              <button
+                key={s}
+                className={'chip' + (winSec === s ? ' on' : '')}
+                onClick={() => setWinSec(s)}
+              >{s}s</button>
+            ))}
+            <button
+              className="chip"
+              onClick={() => {
+                document.querySelectorAll('.plot-card canvas').forEach((c) => {
+                  const v = views.get(c);
+                  if (v) v.auto = true;
+                });
               }}
-            >
-              {Array.from({length: AX}, (_, i) => (
-                <option key={i} value={i}>轴 {String(i + 1).padStart(2, '0')}</option>
-              ))}
-            </select>
+            >全部自动</button>
+            <span className="hint">滚轮缩 Y · 拖动平移 · 双击自动 · Shift+滚轮改窗口</span>
           </div>
-        </section>
+
+          <section className="plots">
+          <Plot title="加速度 (m/s²)" kind="acc" names={['ax', 'ay', 'az']} unit="m/s²"
+                win={winSec} onWin={setWinSec} />
+          <Plot title="角速度 (rad/s)" kind="gyro" names={['gx', 'gy', 'gz']} unit="rad/s"
+                win={winSec} onWin={setWinSec} />
+          <Plot title="姿态 · Mahony" kind="rpy" names={['roll', 'pitch', 'yaw']}
+                win={winSec} onWin={setWinSec} />
+          <Plot
+            title={`选中轴 ${String(sel + 1).padStart(2, '0')}`}
+            kind="axis"
+            names={['位置', '速度']}
+            unit="° / °/s"
+            win={winSec}
+            onWin={setWinSec}
+            header={
+              <>
+                <span>轴</span>
+                <select
+                  value={sel}
+                  onChange={(e) => {
+                    selIndex = Number(e.target.value);
+                    selRef.current = selIndex;
+                    setSel(selIndex);
+                    H.axis[0].length = 0;
+                    H.axis[1].length = 0;
+                  }}
+                >
+                  {Array.from({length: AX}, (_, i) => (
+                    <option key={i} value={i}>轴 {String(i + 1).padStart(2, '0')}</option>
+                  ))}
+                </select>
+                <span>曲线窗口 {winSec} s @ 50 Hz</span>
+              </>
+            }
+          />
+          </section>
+        </div>
       </main>
       <Toaster />
     </div>
