@@ -137,6 +137,54 @@ static int16_t rd_i16(const uint8_t *p)
     return (int16_t)rd_u16(p);
 }
 
+static uint32_t rd_u32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void wr_u16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)(v >> 8);
+}
+
+static void wr_u32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+/* ============ PDO 延迟探针 ============
+   占用输入 0x6000 的 VT1..VT8（原 USART7 透传区）。
+   若要用 USART7 透传，把 PDO_LATENCY_PROBE 置 0。
+   VT1..VT4: 主站写入的时间戳原样回显
+   VT5..VT6: PDI 中断执行时间（µs，纯 MCU，不含 Windows）
+   VT7..VT8: 输出事件 -> 输入映射 的相位差（µs，含 SYNC0 等待）
+   输出侧时间戳位置: 0x7050 U4..U7 = 绝对偏移 180 */
+#define PDO_LATENCY_PROBE   1
+#define OUT_STAMP_OFF      180u
+#define IN_ECHO_OFF        182u
+#define IN_ISR_OFF         186u
+#define IN_PHASE_OFF       188u
+
+volatile uint32_t dbgEchoStamp = 0;
+volatile uint16_t dbgPdiIsrUs  = 0;
+volatile uint16_t dbgPdoPhaseUs = 0;
+
+#if PDO_LATENCY_PROBE
+static volatile uint32_t s_outCyc   = 0;
+static volatile uint8_t  s_outValid = 0;
+
+static uint32_t dwt_to_us(uint32_t cycles)
+{
+    uint32_t per_us = SystemCoreClock / 1000000u;
+    return per_us ? (cycles / per_us) : 0u;
+}
+#endif
+
 /* 线性量化：x -> [0, 2^bits-1] */
 static uint16_t float_to_uint(float x, float x_min, float x_max, uint8_t bits)
 {
@@ -272,6 +320,11 @@ void APPL_InputMapping(UINT16* pData)
     extern volatile uint32_t spiTimeoutCnt;
     uint32_t t0 = spiTimeoutCnt;
     uint8_t *d = (uint8_t *)pData;
+#if PDO_LATENCY_PROBE
+    uint32_t now_cyc = DWT->CYCCNT;
+    uint32_t phase_us = s_outValid ? dwt_to_us(now_cyc - s_outCyc) : 0u;
+    if (phase_us > 0xFFFFu) phase_us = 0xFFFFu;
+#endif
 
     /* 0x6000: 204 B，紧邻其后是 0x60F0 的 212 B，共 416 B */
     memcpy(d, (uint8_t *)&PDIChannel0x6000 + sizeof(PDIChannel0x6000.u16SubIndex0), IN_0x6000_LEN);
@@ -297,6 +350,14 @@ void APPL_InputMapping(UINT16* pData)
         memcpy(lastGood, d, IN_TOTAL_LEN);
     }
 
+#if PDO_LATENCY_PROBE
+    /* 这几个字段与 SPI 读回无关，永远用本地值覆盖 */
+    wr_u32(d + IN_ECHO_OFF, dbgEchoStamp);
+    wr_u16(d + IN_ISR_OFF, dbgPdiIsrUs);
+    wr_u16(d + IN_PHASE_OFF, (uint16_t)phase_us);
+    dbgPdoPhaseUs = (uint16_t)phase_us;
+#endif
+
     eee++;
 }
 
@@ -309,6 +370,12 @@ void APPL_OutputMapping(UINT16* pData)
            s + OUT_0x7000_LEN, OUT_0x7050_LEN);
 
     dbgCtrlWord = s[OUT_CTRL_OFF];
+
+#if PDO_LATENCY_PROBE
+    dbgEchoStamp = rd_u32(s + OUT_STAMP_OFF);
+    s_outCyc = DWT->CYCCNT;
+    s_outValid = 1;
+#endif
 }
 
 void APPL_Application(void) {}
@@ -354,7 +421,18 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         if (lvl == GPIO_PIN_RESET) dbgLevelLow++; else dbgLevelHigh++;
         dbgIrqCnt++;
 
+#if PDO_LATENCY_PROBE
+        {
+            uint32_t isr0 = DWT->CYCCNT;
+            PDI_Isr();
+            {
+                uint32_t us = dwt_to_us(DWT->CYCCNT - isr0);
+                dbgPdiIsrUs = (us > 0xFFFFu) ? 0xFFFFu : (uint16_t)us;
+            }
+        }
+#else
         PDI_Isr();
+#endif
 
         ddd++;
 #endif
