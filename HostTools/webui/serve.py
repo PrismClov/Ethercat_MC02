@@ -140,12 +140,19 @@ def master_action(action, cycle):
         if running:
             return {"running": True}
 
-            os.makedirs(LOG_DIR, exist_ok=True)
+        if not os.path.isfile(EXE):
+            return {"running": False, "error": "ecat_live.exe not found: " + EXE}
+
+        os.makedirs(LOG_DIR, exist_ok=True)
+        try:
             log = open(os.path.join(LOG_DIR, "master.log"), "wb")
-        master = subprocess.Popen(
-            [EXE, IFACE, str(int(cycle)), "--headless"],
-            cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW)
+            master = subprocess.Popen(
+                [EXE, IFACE, str(int(cycle)), "--headless"],
+                cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+        except OSError as exc:
+            return {"running": False, "error": str(exc)}
+
         try:
             import ctypes
             h = ctypes.windll.kernel32.OpenProcess(0x0200, False, master.pid)
@@ -154,7 +161,23 @@ def master_action(action, cycle):
                 ctypes.windll.kernel32.CloseHandle(h)
         except Exception:
             pass
-        return {"running": True, "pid": master.pid}
+
+        # 等主站真正进 OP，别让界面显示"已启动"但其实 PREOP 就退了
+        online = False
+        t0 = time.time()
+        while time.time() - t0 < 5.0:
+            st = read_state()
+            if st and st.get("online"):
+                online = True
+                break
+            time.sleep(0.1)
+        return {"running": master.poll() is None, "online": online, "pid": master.pid}
+
+
+class Bridge(ThreadingHTTPServer):
+    # Windows 上 SO_REUSEADDR 允许重复绑定同一个端口，会导致两个桥抢请求
+    allow_reuse_address = False
+    daemon_threads = True
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -213,7 +236,11 @@ def main():
         port = int(sys.argv[sys.argv.index("--port") + 1])
     if "--root" in sys.argv:
         SERVE_DIR = os.path.abspath(sys.argv[sys.argv.index("--root") + 1])
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        srv = Bridge(("127.0.0.1", port), Handler)
+    except OSError as exc:
+        print(f"port {port} already in use ({exc}); another bridge is running")
+        return
     print(f"NOIR Web UI  ->  http://127.0.0.1:{port}/")
     try:
         srv.serve_forever()

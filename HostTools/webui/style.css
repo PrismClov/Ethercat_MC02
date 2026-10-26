@@ -152,6 +152,18 @@ input[type=color]{
   border-radius:7px; background:transparent; cursor:pointer;
 }
 
+/* NOIR 风提示条：从下方模糊滑入 */
+.toast{
+  position:fixed; right:18px; bottom:18px; z-index:99;
+  padding:10px 14px; border-radius:10px;
+  background:var(--raised); border:1px solid var(--line2); color:var(--fg);
+  font:12px var(--ui);
+  opacity:0; transform:translateY(8px); filter:blur(6px);
+  pointer-events:none;
+  transition:opacity .22s var(--ease), transform .22s var(--ease), filter .22s var(--ease);
+}
+.toast.show{opacity:1; transform:none; filter:blur(0)}
+
 ::-webkit-scrollbar{width:9px}
 ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14); border-radius:99px}
 ::-webkit-scrollbar-track{background:transparent}

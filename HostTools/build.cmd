@@ -21,6 +21,6 @@ echo [4/5] EcatUI.exe
 gcc -O2 -mwindows -o EcatUI.exe src\launcher.c || exit /b 1
 
 echo [5/5] EcatWeb.exe
-gcc -O2 -mwindows -o EcatWeb.exe src\launcher_web.c -lshell32 || exit /b 1
+gcc -O2 -mwindows -o EcatWeb.exe src\launcher_web.c -lshell32 -lws2_32 || exit /b 1
 
 echo build OK

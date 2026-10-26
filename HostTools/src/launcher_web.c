@@ -4,7 +4,9 @@
  * 默认 Python: D:\clover\Environment\Python\pythonw.exe
  * 可用环境变量 ECAT_PYTHON 覆盖。
  */
+#include <winsock2.h>
 #include <windows.h>
+#include <ws2tcpip.h>
 #include <wchar.h>
 #include <shellapi.h>
 
@@ -14,6 +16,32 @@
 static void die(const wchar_t *msg)
 {
     MessageBoxW(NULL, msg, L"EcatWeb", MB_ICONERROR | MB_OK);
+}
+
+/* 8766 已经有人监听？双击第二次时不要再起一个桥 */
+static int port_open(void)
+{
+    WSADATA w;
+    SOCKET s;
+    struct sockaddr_in a;
+    int ok = 0;
+
+    if (WSAStartup(MAKEWORD(2, 2), &w) != 0)
+        return 0;
+
+    s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s != INVALID_SOCKET)
+    {
+        ZeroMemory(&a, sizeof(a));
+        a.sin_family = AF_INET;
+        a.sin_port = htons(8766);
+        a.sin_addr.s_addr = inet_addr("127.0.0.1");
+        if (connect(s, (struct sockaddr *)&a, sizeof(a)) == 0)
+            ok = 1;
+        closesocket(s);
+    }
+    WSACleanup();
+    return ok;
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
@@ -62,6 +90,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     {
         die(L"还没有构建产物 webui-react\\dist。\n\n请先运行 build_react.cmd。");
         return 1;
+    }
+
+    if (port_open())
+    {
+        ShellExecuteW(NULL, L"open", URL, NULL, NULL, SW_SHOWNORMAL);
+        return 0;
     }
 
     swprintf(cmdline, MAX_PATH * 4,

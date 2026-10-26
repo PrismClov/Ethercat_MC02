@@ -333,8 +333,13 @@ export default function App() {
 
   const start = async () => {
     const r = await post('/api/master', {action: 'start', cycle});
-    if (r?.running) { setRunning(true); toast.success('主站已启动'); }
-    else toast.error('启动失败');
+    if (r?.running) {
+      setRunning(true);
+      if (r.online) toast.success('主站已启动');
+      else toast.error('主站没进 OP：请先点「复位从站」再启动');
+    } else {
+      toast.error('启动失败' + (r?.error ? '：' + r.error : ''));
+    }
   };
   const stop = async () => {
     await post('/api/master', {action: 'stop'});

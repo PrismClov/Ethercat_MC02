@@ -9,6 +9,20 @@ const MAXPTS = 900;             // 30 Hz × 30 s
 const $ = (s) => document.querySelector(s);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
+function notify(msg, ms = 2600) {
+  let el = document.getElementById('nr-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'nr-toast';
+    el.className = 'toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), ms);
+}
+
 let state = null;
 let masterRunning = false;
 let cycle = 500000;
@@ -495,6 +509,9 @@ function wireButtons() {
       masterRunning = true;
       $('#btn-start').disabled = true;
       $('#btn-stop').disabled = false;
+      if (!res.online) notify('主站没进 OP：请先点「复位从站」');
+    } else {
+      notify('启动失败' + (res && res.error ? '：' + res.error : ''));
     }
   };
   $('#btn-stop').onclick = async () => {
