@@ -37,7 +37,12 @@ body {
   padding: 9px 12px 8px;
   gap: 5px;
 }
+.stats .fast-stat { contain: layout paint; }
 .stats .nr-stat-value { font-size: 22px; letter-spacing: -.4px; }
+.stats .fast-stat .nr-stat-value {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .stats .nr-stat-label,
 .stats .nr-stat-sub { font-size: 10.5px; }
 
@@ -55,6 +60,63 @@ body {
 .pill.ok { color: #fff; }
 .pill.warn { color: #e0a35a; }
 
+.cycle-switch {
+  --cycle-pad: 3px;
+  --cycle-gap: 2px;
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  height: 32px;
+  gap: var(--cycle-gap);
+  padding: var(--cycle-pad);
+  border: 1px solid var(--nr-line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .08);
+  overflow: hidden;
+}
+.cycle-thumb {
+  position: absolute;
+  z-index: 2;
+  top: var(--cycle-pad);
+  bottom: var(--cycle-pad);
+  left: 0;
+  width: calc((100% - 2 * var(--cycle-pad) - 2 * var(--cycle-gap)) / 3);
+  border-radius: 5px;
+  pointer-events: none;
+  mix-blend-mode: difference;
+  transform: translateX(calc(var(--cycle-pad) +
+             var(--cycle-index) * (100% + var(--cycle-gap))));
+}
+.cycle-ink {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: #fff;
+}
+.cycle-switch button {
+  position: relative;
+  z-index: 1;
+  min-width: 64px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #fff;
+  font: 600 12px/1 var(--nr-font);
+  cursor: pointer;
+  outline: none !important;
+  -webkit-tap-highlight-color: transparent;
+}
+.cycle-switch button.on { color: #fff; }
+.cycle-switch button:focus {
+  outline: none !important;
+  box-shadow: none;
+}
+.cycle-switch button:focus-visible {
+  outline: none !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .72);
+}
+
 /* ── 主体 ── */
 main {
   display: grid;
@@ -70,6 +132,7 @@ main {
 .row { display: flex; gap: 8px; margin-bottom: 5px; align-items: center; }
 .row > .nr-btn { flex: 1; }
 .row > .nr-btn { height: 28px; }
+.bar .nr-btn:active:not(:disabled) { transform: scale(.97); }
 
 .nr-btn.danger {
   background: #b3261e;
@@ -139,8 +202,20 @@ main {
 .charts-ctl .chip:hover { border-color: var(--nr-line-strong); color: #fff; }
 .charts-ctl .chip.on { background: #fff; border-color: #fff; color: #000; }
 .charts-ctl .hint { margin-left: auto; color: rgba(255,255,255,.22); }
-.plot-card { position: relative; padding: 0 !important; overflow: hidden; }
-.plot-card canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.plot-card {
+  position: relative;
+  padding: 0 !important;
+  overflow: hidden;
+  contain: layout paint;
+}
+.plot-card canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
 .plot-wrap { position: relative; min-height: 0; display: flex; }
 .plot-wrap > .plot-card { flex: 1; }
 
@@ -186,3 +261,7 @@ input[type=color] {
 ::-webkit-scrollbar { width: 9px; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 99px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cycle-thumb { transition: none; }
+}

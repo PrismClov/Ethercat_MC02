@@ -1,7 +1,7 @@
 """NOIR Web UI 的本地桥。
 
   * 静态文件：本目录
-  * GET  /api/stream  以 SSE 推送共享内存状态（30 Hz）
+  * GET  /api/stream  以 SSE 推送共享内存状态（20 Hz）
   * POST /api/cmd     写命令到 ecat_ui_cmd
   * POST /api/master  启动/停止 ecat_live.exe（{"action":"start"|"stop","cycle":500000}）
 
@@ -49,6 +49,7 @@ STATE_FMT = "<IIIIQff3f3f3h3hHHHHHH" + "ffHHihH" * AXES + "ffffff"
 CMD_FMT = "<III6B2B" + "fffff" * AXES
 STATE_SIZE = struct.calcsize(STATE_FMT)
 CMD_SIZE = struct.calcsize(CMD_FMT)
+STREAM_HZ = 20
 
 shared_handles = []
 
@@ -135,6 +136,8 @@ def write_cmd(payload):
     led = payload.get("led") or [0, 0, 0]
     with cmd_lock:
         cmd_seq = (cmd_seq + 1) & 0x7FFFFFFF
+        # 奇数表示正在写入。C 主站会忽略奇数 seq，写完后必须提交为偶数，
+        # 否则第一次命令会被当成“仍在更新”而丢弃。
         head = struct.pack(
             "<III6B2B", cmd_seq, CMD_MAGIC, CMD_SIZE,
             int(payload.get("ctrl", 0)) & 0xFF,
@@ -144,6 +147,20 @@ def write_cmd(payload):
         body = b"".join(struct.pack("<fffff", *[float(x) for x in a]) for a in axes)
         cmd_mm[:len(head)] = head
         cmd_mm[len(head):len(head) + len(body)] = body
+        cmd_seq = (cmd_seq + 1) & 0x7FFFFFFF
+        struct.pack_into("<I", cmd_mm, 0, cmd_seq)
+
+
+def _reap_master(process):
+    """Reap a stopped master without delaying the HTTP response."""
+    try:
+        process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            process.kill()
 
 
 def master_action(action, cycle):
@@ -171,10 +188,14 @@ def master_action(action, cycle):
         if action == "stop":
             if running:
                 write_cmd({"ctrl": 0, "stop": 1})
-                try:
-                    master.wait(timeout=3.0)
-                except subprocess.TimeoutExpired:
-                    master.terminate()
+                process = master
+                master = None
+                threading.Thread(
+                    target=_reap_master,
+                    args=(process,),
+                    daemon=False,
+                ).start()
+                return {"running": False, "stopping": True}
             master = None
             return {"running": False}
         if running:
@@ -215,18 +236,21 @@ def master_action(action, cycle):
             except Exception:
                 pass
 
-        # 等主站真正进 OP，别让界面显示"已启动"但其实 PREOP 就退了
-        online = False
-        t0 = time.time()
-        while time.time() - t0 < 5.0:
-            st = read_state()
-            # 只有真的进了 OP 才算启动成功（只看帧号推进不够）
-            if st and st.get("online") and (st.get("al", 0) & 0x0F) == 0x08:
-                online = True
-                break
-            time.sleep(0.1)
-        result = {"running": master.poll() is None, "online": online,
-                  "pid": master.pid}
+        # 启动命令立即返回。界面通过 SSE 状态确认是否真正进入 OP，
+        # 避免 EtherCAT 初始化期间按钮长时间没有任何反馈。
+        time.sleep(0.2)
+        running = master.poll() is None
+        st = read_state()
+        online = bool(
+            running and st and st.get("online")
+            and (st.get("al", 0) & 0x0F) == 0x08
+        )
+        result = {
+            "running": running,
+            "starting": running and not online,
+            "online": online,
+            "pid": master.pid,
+        }
         if not result["running"]:
             try:
                 with open(os.path.join(LOG_DIR, "master.log"), "rb") as fh:
@@ -265,9 +289,10 @@ class Handler(SimpleHTTPRequestHandler):
             while True:
                 st = read_state()
                 if st is not None:
-                    self.wfile.write(b"data: " + json.dumps(st).encode() + b"\n\n")
+                    payload = json.dumps(st, separators=(",", ":")).encode()
+                    self.wfile.write(b"data: " + payload + b"\n\n")
                     self.wfile.flush()
-                time.sleep(1 / 30)
+                time.sleep(1 / STREAM_HZ)
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 

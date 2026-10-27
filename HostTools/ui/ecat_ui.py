@@ -386,6 +386,8 @@ class SharedMem:
         try:
             self.cmd_mm[:len(head)] = head
             self.cmd_mm[len(head):len(head) + len(body)] = body
+            self.cmd_seq = (self.cmd_seq + 1) & 0x7FFFFFFF
+            struct.pack_into("<I", self.cmd_mm, 0, self.cmd_seq)
         except (ValueError, OSError):
             pass
 

@@ -65,6 +65,16 @@ EcatWeb.exe          # 起 serve.py(8766) + 打开默认浏览器
 | Web 零依赖 | `run_web.cmd` | HTML+CSS+JS，单个 Python 桥；用真 `mix-blend-mode: difference` 做指示块 |
 | Web React | `run_react.cmd` | 直接 `npm i github:HanRabbit/NOIR-UI`，用它的 `Segmented / NumberFlow / Stat / toast` |
 
+Linux 下使用 React 界面时不打开外部浏览器：
+
+```bash
+HostTools/build_react_linux.sh
+HostTools/run_react_linux.sh
+```
+
+`run_react_linux.sh` 会启动本地数据桥并在 WebKit2GTK 原生窗口中显示 React
+界面；关闭窗口时自动停止主站并关闭数据桥。
+
 ## 三种启动方式
 
 | exe | 效果 | 依赖 |
@@ -76,7 +86,7 @@ EcatWeb.exe          # 起 serve.py(8766) + 打开默认浏览器
 `EcatClient.exe` 内部在后台线程起 `webui/serve.py`，窗口关闭时自动停主站、关桥；
 如果已经有一个客户端在跑，它只连已有的桥，不会重复启动。
 
-Web 版的数据通路：`ecat_live.exe` ↔ 共享内存 ↔ `webui/serve.py`（SSE 30 Hz）↔ 浏览器。
+Web 版的数据通路：`ecat_live.exe` ↔ 共享内存 ↔ `webui/serve.py`（SSE 20 Hz）↔ 浏览器。
 三个界面可以同时开着看同一份数据，但**同一时刻只能有一个主站进程**。
 
 ## 编译
@@ -157,4 +167,4 @@ ecat_zero_probe.exe "\Device\NPF_{...}" 15 500000
 
 - Windows 不是实时系统，2 kHz 下偶发 1~3 ms 发帧抖动，UI 的 `最大间隔` 能看到。
 - 经典 CAN 1 Mbit/s 跑不下 7 轴 × 1 kHz（14 帧 ≈ 1.67 ms），需 FD-BRS 或降 CAN 侧控制率。
-- 曲线窗口 30 s @ 50 Hz，界面刷新 10 fps（再高会拖慢事件循环）。
+- 曲线以 20 Hz 采样、20 fps 绘制；轴反馈 10 Hz，顶栏统计 5 Hz。
