@@ -1,0 +1,9 @@
+run,phase_lock,load,duration_s,pdi_p50_us,pdi_p99_us,pdi_max_us,failed_frames,max_interval_ms
+free-1,no,idle,10,99,215,389,0,0.503
+free-2,no,idle,10,28,218,389,0,0.501
+free-3,no,idle,10,200,218,390,0,0.501
+free-stress,no,cpu0-4,60,140,218,65527,86,0.505
+locked-idle,yes,idle,60,27,28,29,0,0.505
+locked-stress-1-4,yes,cpu1-4,60,27,28,213,0,0.506
+locked-stress-0-4,yes,cpu0-4,60,27,28,210,0,0.507
+locked-abstime,yes,cpu0-4,10,27,28,177,0,0.525

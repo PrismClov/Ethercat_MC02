@@ -56,6 +56,7 @@ typedef struct
     int state_timeout_ms;
     int rt_priority;
     int cpu;
+    int32_t dc_lead_ns;
     bool list_adapters;
     bool enable_dc;
     bool profile_mc02;
@@ -90,6 +91,16 @@ typedef struct
     float max_gap_ms;
     uint16_t phase_us;
     uint16_t phase_max_us;
+    uint64_t phase_count;
+    uint64_t phase_sum_us;
+    uint32_t phase_min_us;
+    uint32_t phase_run_max_us;
+    uint64_t phase_overflow;
+    uint32_t phase_histogram[2001];
+    uint64_t dc_phase_count;
+    uint64_t dc_phase_sum_ns;
+    uint32_t dc_phase_min_ns;
+    uint32_t dc_phase_max_ns;
     uint32_t rtt_count;
     uint32_t rtt_sum_us;
     uint32_t rtt_min_us;
@@ -118,29 +129,15 @@ static uint64_t now_ns(void)
 
 static void sleep_until_ns(uint64_t deadline)
 {
-    struct timespec ts;
-    uint64_t remaining;
+    struct timespec target;
+    int result;
 
-    for (;;)
+    target.tv_sec = (time_t)(deadline / 1000000000ULL);
+    target.tv_nsec = (long)(deadline % 1000000000ULL);
+    do
     {
-        uint64_t current = now_ns();
-
-        if (current >= deadline)
-        {
-            return;
-        }
-        remaining = deadline - current;
-        ts.tv_sec = (time_t)(remaining / 1000000000ULL);
-        ts.tv_nsec = (long)(remaining % 1000000000ULL);
-        if (nanosleep(&ts, NULL) == 0)
-        {
-            return;
-        }
-        if (errno != EINTR)
-        {
-            return;
-        }
-    }
+        result = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &target, NULL);
+    } while (result == EINTR);
 }
 
 static void on_signal(int signo)
@@ -248,6 +245,7 @@ static void print_usage(const char *program)
         "      --lock-memory            锁定主站内存，避免缺页抖动\n"
         "      --profile mc02          配置本项目 MC02 从站的 SYNC0/PDO 参数\n"
         "      --dc                    启用 SOEM 分布式时钟与 SYNC0\n"
+        "      --dc-lead-us <微秒>     将发送相位锁到 SYNC0 前指定时间\n"
         "      --preop-only            只配置到 Pre-Op，不进入过程数据阶段\n"
         "  -v, --verbose               每秒打印过程数据前 32 字节\n"
         "  -l, --list                  列出网卡\n"
@@ -281,7 +279,8 @@ static bool parse_options(int argc, char **argv, MasterOptions *options)
         OPT_CYCLE_NS,
         OPT_CPU,
         OPT_RT_PRIORITY,
-        OPT_LOCK_MEMORY
+        OPT_LOCK_MEMORY,
+        OPT_DC_LEAD_US
     };
     static const struct option long_options[] = {
         {"ifname", required_argument, NULL, 'i'},
@@ -294,6 +293,7 @@ static bool parse_options(int argc, char **argv, MasterOptions *options)
         {"lock-memory", no_argument, NULL, OPT_LOCK_MEMORY},
         {"profile", required_argument, NULL, OPT_PROFILE},
         {"dc", no_argument, NULL, OPT_DC},
+        {"dc-lead-us", required_argument, NULL, OPT_DC_LEAD_US},
         {"preop-only", no_argument, NULL, OPT_PREOP_ONLY},
         {"verbose", no_argument, NULL, 'v'},
         {"list", no_argument, NULL, 'l'},
@@ -380,6 +380,16 @@ static bool parse_options(int argc, char **argv, MasterOptions *options)
         case OPT_DC:
             options->enable_dc = true;
             break;
+        case OPT_DC_LEAD_US:
+            if (!parse_u32(optarg, &value) || (value == 0) ||
+                (value > (uint32_t)(INT32_MAX / 1000)))
+            {
+                fprintf(stderr, "DC 提前量必须是正整数微秒。\n");
+                return false;
+            }
+            options->dc_lead_ns = (int32_t)value * 1000;
+            options->enable_dc = true;
+            break;
         case OPT_PREOP_ONLY:
             options->preop_only = true;
             break;
@@ -411,6 +421,11 @@ static bool parse_options(int argc, char **argv, MasterOptions *options)
     if (options->profile_mc02)
     {
         options->enable_dc = true;
+    }
+    if (options->dc_lead_ns >= (int32_t)options->cycle_ns)
+    {
+        fprintf(stderr, "DC 提前量必须小于发送周期。\n");
+        return false;
     }
     return true;
 }
@@ -682,6 +697,145 @@ static void update_latency_stats(Master *master, uint64_t received_ns)
         {
             master->phase_max_us = master->phase_us;
         }
+        if (master->phase_us != 0xFFFFU)
+        {
+            uint32_t bucket = master->phase_us <= 2000U
+                                  ? master->phase_us
+                                  : 2000U;
+
+            master->phase_count++;
+            master->phase_sum_us += master->phase_us;
+            if ((master->phase_min_us == 0U) ||
+                (master->phase_us < master->phase_min_us))
+            {
+                master->phase_min_us = master->phase_us;
+            }
+            if (master->phase_us > master->phase_run_max_us)
+            {
+                master->phase_run_max_us = master->phase_us;
+            }
+            if (master->phase_us > 2000U)
+            {
+                master->phase_overflow++;
+            }
+            master->phase_histogram[bucket]++;
+        }
+    }
+}
+
+static uint32_t phase_percentile(const Master *master, uint32_t percentile)
+{
+    uint64_t target;
+    uint64_t cumulative = 0;
+    uint32_t index;
+
+    if (master->phase_count == 0U)
+    {
+        return 0U;
+    }
+    target = (master->phase_count * percentile + 99U) / 100U;
+    for (index = 0; index < 2001U; index++)
+    {
+        cumulative += master->phase_histogram[index];
+        if (cumulative >= target)
+        {
+            return index;
+        }
+    }
+    return 2000U;
+}
+
+static void align_dc_send_phase(Master *master, const MasterOptions *options,
+                                uint64_t *next_cycle, int wkc,
+                                int expected_wkc)
+{
+    int64_t phase_ns;
+    int64_t target_ns;
+    int64_t error_ns;
+    int64_t adjustment_ns;
+    uint64_t now;
+
+    if (!master->dc_active || (options->dc_lead_ns <= 0) ||
+        (master->ctx.DCtime <= 0) || (wkc < expected_wkc))
+    {
+        return;
+    }
+
+    phase_ns = master->ctx.DCtime % (int64_t)master->cycle_ns;
+    if (phase_ns < 0)
+    {
+        phase_ns += master->cycle_ns;
+    }
+    target_ns = (int64_t)master->cycle_ns - options->dc_lead_ns;
+    error_ns = target_ns - phase_ns;
+    if (error_ns > (int64_t)master->cycle_ns / 2)
+    {
+        error_ns -= master->cycle_ns;
+    }
+    else if (error_ns < -(int64_t)master->cycle_ns / 2)
+    {
+        error_ns += master->cycle_ns;
+    }
+
+    /* Slow phase-only trim; keep the local monotonic interval close to cycle. */
+    adjustment_ns = error_ns / 4;
+    if (adjustment_ns > 25000)
+    {
+        adjustment_ns = 25000;
+    }
+    else if (adjustment_ns < -25000)
+    {
+        adjustment_ns = -25000;
+    }
+    now = now_ns();
+    if ((int64_t)(*next_cycle + adjustment_ns) < (int64_t)now + 10000)
+    {
+        *next_cycle = now + 10000U;
+    }
+    else
+    {
+        *next_cycle = (uint64_t)((int64_t)*next_cycle + adjustment_ns);
+    }
+
+    master->dc_phase_count++;
+    master->dc_phase_sum_ns += (uint64_t)phase_ns;
+    if ((master->dc_phase_min_ns == 0U) ||
+        ((uint32_t)phase_ns < master->dc_phase_min_ns))
+    {
+        master->dc_phase_min_ns = (uint32_t)phase_ns;
+    }
+    if ((uint32_t)phase_ns > master->dc_phase_max_ns)
+    {
+        master->dc_phase_max_ns = (uint32_t)phase_ns;
+    }
+}
+
+static void print_run_summary(const Master *master, uint64_t cycle_count,
+                              uint64_t bad_wkc_count)
+{
+    const uint32_t p50 = phase_percentile(master, 50U);
+    const uint32_t p99 = phase_percentile(master, 99U);
+    const double phase_avg = master->phase_count > 0U
+                                 ? (double)master->phase_sum_us /
+                                       (double)master->phase_count
+                                 : 0.0;
+
+    printf("运行统计：周期=%" PRIu64 " 失败帧=%" PRIu64
+           " 最大间隔=%.3fms\n",
+           cycle_count, bad_wkc_count, (double)master->max_gap_ms);
+    printf("PDI 相位：样本=%" PRIu64 " 最小=%uus 平均=%.2fus "
+           "P50=%uus P99=%uus 最大=%uus 超过2000us=%" PRIu64 "\n",
+           master->phase_count, master->phase_min_us, phase_avg,
+           p50, p99, master->phase_run_max_us, master->phase_overflow);
+    if (master->dc_phase_count > 0U)
+    {
+        const double dc_avg_ns =
+            (double)master->dc_phase_sum_ns / (double)master->dc_phase_count;
+
+        printf("DC 发送相位：样本=%" PRIu64 " 最小=%.2fus 平均=%.2fus "
+               "最大=%.2fus\n",
+               master->dc_phase_count, master->dc_phase_min_ns / 1000.0,
+               dc_avg_ns / 1000.0, master->dc_phase_max_ns / 1000.0);
     }
 }
 
@@ -1357,9 +1511,11 @@ static int run_cycle_loop(Master *master, const MasterOptions *options)
         {
             next_cycle = now_ns();
         }
+        align_dc_send_phase(master, options, &next_cycle, wkc, wkc_expected);
         sleep_until_ns(next_cycle);
     }
 
+    print_run_summary(master, cycle_count, bad_wkc_count);
     return 0;
 }
 

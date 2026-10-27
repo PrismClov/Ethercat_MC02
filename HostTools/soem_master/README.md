@@ -75,10 +75,11 @@ sudo ./build/soem_master/ecat_soem_master -i eth1 -c 2000
 sudo ./build/soem_master/ecat_soem_master -i eth1 -t 10
 ```
 
-配置 MC02 的同步参数并启用 SYNC0：
+配置 MC02 的同步参数、启用 SYNC0，并把发送锁到 SYNC0 前 150 µs：
 
 ```bash
-sudo ./build/soem_master/ecat_soem_master -i eth1 -c 2000 --profile mc02
+sudo ./build/soem_master/ecat_soem_master -i eth1 -c 500 --profile mc02 \
+  --dc-lead-us 150 --cpu 5 --rt-priority 80 --lock-memory
 ```
 
 需要周期性查看 PDO 原始字节时加 `--verbose`。
@@ -95,12 +96,31 @@ ECAT_IFACE=enP8p1s0 bash HostTools/run_react_linux.sh
 启动 `ecat_soem_master --profile mc02`，并通过 POSIX 共享内存交换状态和命令。
 每次重新编译主站后都需要重新执行 `setcap`。
 
-Linux Web UI 默认以 CPU5、`SCHED_FIFO` 优先级 80、锁定内存启动。可以通过
-`ECAT_CPU` 和 `ECAT_RT_PRIORITY` 调整：
+Linux Web UI 默认以 CPU5、`SCHED_FIFO` 优先级 80、锁定内存启动，并把发送
+相位锁定在 SYNC0 前 150 µs。可以通过 `ECAT_CPU`、`ECAT_RT_PRIORITY` 和
+`ECAT_DC_LEAD_US` 调整：
 
 ```bash
-ECAT_CPU=5 ECAT_RT_PRIORITY=80 bash HostTools/run_react_linux.sh
+ECAT_CPU=5 ECAT_RT_PRIORITY=80 ECAT_DC_LEAD_US=150 \
+  bash HostTools/run_react_linux.sh
 ```
+
+设置 `ECAT_DC_LEAD_US=0` 可关闭主站发送相位锁定。
+
+### DC 发送相位锁定
+
+`--dc-lead-us <微秒>` 使用从站返回的 DC SysTime 调整主站的绝对发送时刻。
+例如 `--dc-lead-us 150` 会把 2 kHz 发送锁在 SYNC0 前 150 µs：
+
+```bash
+sudo ./build/soem_master/ecat_soem_master -i enP8p1s0 \
+  -c 500 --profile mc02 --dc-lead-us 150 \
+  --cpu 5 --rt-priority 80 --lock-memory
+```
+
+实测 CPU0–4 全核满载 60 秒时，120,004 个周期 WKC 失败帧为 0，
+PDI P50/P99 分别为 27/28 µs。测试汇总见
+[`docs/ethercat_phase_lock_statistics.png`](../docs/ethercat_phase_lock_statistics.png)。
 
 还可以将主站和网卡中断所在的 CPU 调频策略设为 `performance`：
 

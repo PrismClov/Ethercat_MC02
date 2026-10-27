@@ -36,6 +36,7 @@ else:
     IFACE = os.environ.get("ECAT_IFACE", "enP8p1s0")
     RT_PRIORITY = int(os.environ.get("ECAT_RT_PRIORITY", "80"))
     RT_CPU = int(os.environ.get("ECAT_CPU", "5"))
+    DC_LEAD_US = int(os.environ.get("ECAT_DC_LEAD_US", "0"))
 JLINK_SCRIPT = os.path.join(ROOT, "jlink", "reset_only.jlink")
 LOG_DIR = os.path.join(ROOT, "logs")
 
@@ -191,6 +192,8 @@ def master_action(action, cycle):
             else:
                 args = [EXE, "-i", IFACE, "--cycle-ns", str(int(cycle)),
                         "--profile", "mc02", "--lock-memory"]
+                if DC_LEAD_US > 0:
+                    args += ["--dc-lead-us", str(DC_LEAD_US)]
                 if RT_PRIORITY > 0:
                     args += ["--rt-priority", str(RT_PRIORITY)]
                 if RT_CPU >= 0:

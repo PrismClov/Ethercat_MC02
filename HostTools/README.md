@@ -99,7 +99,8 @@ cmake -S HostTools/soem_master -B build/soem_master \
   -DSOEM_ROOT=/path/to/SOEM -DCMAKE_BUILD_TYPE=Release
 cmake --build build/soem_master -j
 sudo ./build/soem_master/ecat_soem_master -i eth1 --preop-only
-sudo ./build/soem_master/ecat_soem_master -i eth1 -c 2000 --profile mc02
+sudo ./build/soem_master/ecat_soem_master -i eth1 -c 500 --profile mc02 \
+  --dc-lead-us 150 --cpu 5 --rt-priority 80 --lock-memory
 sudo setcap cap_net_raw,cap_net_admin,cap_sys_nice,cap_ipc_lock=eip \
   build/soem_master/ecat_soem_master
 ECAT_IFACE=enP8p1s0 bash HostTools/run_react_linux.sh
